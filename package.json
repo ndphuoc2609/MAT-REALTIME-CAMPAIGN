@@ -1,0 +1,23 @@
+{
+  "name": "admicro-crawler",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node source-app.mjs",
+    "test": "node --test",
+    "admin:create": "node scripts/admin-user.mjs create-admin",
+    "admin:reset-password": "node scripts/admin-user.mjs reset-password",
+    "user:create": "node scripts/admin-user.mjs create-user",
+    "grant:reports": "node scripts/manage-grants.mjs",
+    "session:login": "node scripts/session-login.mjs",
+    "session:state": "node scripts/session-state.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "pg": "^8.23.0",
+    "playwright": "^1.63.0"
+  }
+}

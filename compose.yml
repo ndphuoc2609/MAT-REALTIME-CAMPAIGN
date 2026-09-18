@@ -1,0 +1,41 @@
+services:
+  app:
+    build: .
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    environment:
+      PORT: "8787"
+      HOST: "0.0.0.0"
+      DATA_DIR: /data
+      DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in the server environment}"
+      SYNC_INTERVAL_MINUTES: "${SYNC_INTERVAL_MINUTES:-1440}"
+      HOUSEKEEPING_ENABLED: "${HOUSEKEEPING_ENABLED:-true}"
+      HOUSEKEEPING_INTERVAL_MINUTES: "${HOUSEKEEPING_INTERVAL_MINUTES:-360}"
+      HOUSEKEEPING_SNAPSHOT_RETAIN: "${HOUSEKEEPING_SNAPSHOT_RETAIN:-3}"
+      HOUSEKEEPING_JOB_RETENTION_DAYS: "${HOUSEKEEPING_JOB_RETENTION_DAYS:-90}"
+      HOUSEKEEPING_CACHE_ENABLED: "${HOUSEKEEPING_CACHE_ENABLED:-true}"
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
+      SOURCE_24H_USERNAME: "${SOURCE_24H_USERNAME:-}"
+      SOURCE_24H_PASSWORD: "${SOURCE_24H_PASSWORD:-}"
+      SOURCE_24H_AUTO_LOGIN: "${SOURCE_24H_AUTO_LOGIN:-false}"
+      SOURCE_24H_ALLOW_INSECURE_HTTP: "${SOURCE_24H_ALLOW_INSECURE_HTTP:-false}"
+      SOURCE_ADMICRO_USERNAME: "${SOURCE_ADMICRO_USERNAME:-}"
+      SOURCE_ADMICRO_PASSWORD: "${SOURCE_ADMICRO_PASSWORD:-}"
+      SOURCE_ADMICRO_AUTO_LOGIN: "${SOURCE_ADMICRO_AUTO_LOGIN:-false}"
+    volumes:
+      - ./data:/data
+    ports:
+      - "${APP_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
