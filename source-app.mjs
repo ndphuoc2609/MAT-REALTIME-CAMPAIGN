@@ -4,13 +4,14 @@ import { existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { identify, scope, safeLink, groups, month } from './lib/links.mjs';
+import { identify, scope, safeLink, groups, aggregateReports, month } from './lib/links.mjs';
 import { validateDisplayName } from './lib/name-validation.mjs';
 import { openStore } from './lib/link-store.mjs';
 import { housekeepingConfig, loadLocalConfig, source24hAutoLoginEnabled, sourceAdmicroAutoLoginEnabled } from './lib/config.mjs';
 import { openAuthStore } from './lib/auth-store.mjs';
 import { createPostgresPool } from './lib/postgres-persistence.mjs';
 import { collect, closeBrowserContexts, sourceProfileDirectory, isTransientNetworkError } from './lib/connectors.mjs';
+import { ensureGoogleAdsMonthlyLinks, GOOGLE_CONNECTOR } from './lib/google-ads.mjs';
 import { authCircuit, promoteVerifiedProfile, recoverProfilePromotion, resetAuthCircuit, withProfileLock } from './lib/source-session.mjs';
 import { hasActiveSyncJobs, runHousekeeping } from './lib/housekeeping.mjs';
 
@@ -137,11 +138,18 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
       initialEnabled: initialScheduleEnabled
     };
   }
+  async function ensureGoogleSources(requestedMonth = null) {
+    return ensureGoogleAdsMonthlyLinks(store, { requestedMonth, now: now() });
+  }
   async function queueUnsyncedSources() {
     if (!scheduleSettings().enabled) return;
+    await ensureGoogleSources();
     const parts = localScheduleParts(now());
     const scheduledDate = `${parts.year}-${parts.month}-${parts.day}`;
     for (const link of await store.list()) {
+      // Monthly Google sources are materialized automatically, but provider
+      // calls remain explicit through the queue actions in the UI/API.
+      if (link.connector === GOOGLE_CONNECTOR) continue;
       if (!link.needsDates && !await store.result(link)) await enqueue(link, { useCandidate: true, scheduledDate });
     }
   }
@@ -207,7 +215,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
     }
     const running = active.find(job => job.status === 'running');
     if (running) {
-      const candidatePending = useCandidate && existsSync(`${sourceProfileDirectory(directory, link.connector)}.pending`);
+      const candidatePending = useCandidate && link.connector !== GOOGLE_CONNECTOR && existsSync(`${sourceProfileDirectory(directory, link.connector)}.pending`);
       // A scheduled active-profile crawl must not consume the administrator's
       // next explicit candidate test. Queue the candidate behind it instead.
       if (!candidatePending || running.useCandidate) {
@@ -237,25 +245,31 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
             job.status = 'running'; job.attempts = Number(job.attempts || 0) + 1; job.nextAttemptAt = null;
             job.message = 'Đang mở phiên nguồn đã cấu hình.'; await store.putJob(job);
             try {
-              const activeProfile = sourceProfileDirectory(directory, link.connector);
-              const result = await withProfileLock(directory, link.connector, async profileLock => {
-                await recoverProfilePromotion(activeProfile);
-                const candidateInUse = Boolean(job.useCandidate && existsSync(`${activeProfile}.pending`));
-                const collected = await collector(link, { directory, projectRoot, job, update: () => store.putJob(job), useCandidate: candidateInUse, lockHeld: true, profileLock, retryBudget: maxRetries });
-                profileLock.assertHeld();
-                // Built-in collect emits an explicit verification marker. A
-                // legacy/injected collector may not know that contract, so a
-                // complete read is accepted only when this locked run was
-                // actually using an existing candidate. Partial results never
-                // promote a candidate.
-                const sessionVerified = collected?.sessionVerified === true || (candidateInUse && collected?.complete === true);
-                if (sessionVerified) {
-                  profileLock.assertHeld();
-                  await promoteVerifiedProfile(activeProfile);
-                  profileLock.assertHeld();
+              const collectWithLock = async () => {
+                if (link.connector === GOOGLE_CONNECTOR) {
+                  return collector(link, { directory, projectRoot, job, update: () => store.putJob(job), retryBudget: maxRetries });
                 }
-                return collected;
-              });
+                const activeProfile = sourceProfileDirectory(directory, link.connector);
+                return withProfileLock(directory, link.connector, async profileLock => {
+                  await recoverProfilePromotion(activeProfile);
+                  const candidateInUse = Boolean(job.useCandidate && existsSync(`${activeProfile}.pending`));
+                  const collected = await collector(link, { directory, projectRoot, job, update: () => store.putJob(job), useCandidate: candidateInUse, lockHeld: true, profileLock, retryBudget: maxRetries });
+                  profileLock.assertHeld();
+                  // Built-in collect emits an explicit verification marker. A
+                  // legacy/injected collector may not know that contract, so a
+                  // complete read is accepted only when this locked run was
+                  // actually using an existing candidate. Partial results never
+                  // promote a candidate.
+                  const sessionVerified = collected?.sessionVerified === true || (candidateInUse && collected?.complete === true);
+                  if (sessionVerified) {
+                    profileLock.assertHeld();
+                    await promoteVerifiedProfile(activeProfile);
+                    profileLock.assertHeld();
+                  }
+                  return collected;
+                });
+              };
+              const result = await collectWithLock();
               job.status = result.complete ? 'success' : 'partial';
               job.message = result.complete ? 'Đã tải dữ liệu và đối soát thành công.' : result.reconciliation.status === 'incomplete' ? 'Đã đọc báo cáo nhưng một số ngày thiếu dữ liệu; giữ snapshot trước để đối soát tiếp.' : 'Tổng các ngày không khớp tổng kỳ; giữ snapshot trước để đối soát lại.';
               job.finishedAt = new Date().toISOString();
@@ -372,6 +386,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
       }
       if (url.pathname === '/api/admin/grants' && req.method === 'GET') {
         requireAdmin(session);
+        await ensureGoogleSources();
         const users = (await auth.listUsers()).filter(user => user.role === 'viewer');
         const sources = (await store.list()).map(link => ({ id: link.id, name: link.name, source: link.source, from: link.from, to: link.to }));
         const grants = await Promise.all(users.map(async user => [user.id, await auth.grantsForUser(user.id)]));
@@ -419,13 +434,15 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
         return json(res, { schedule: scheduleSettings() });
       }
       if (req.method === 'GET' && url.pathname === '/api/links') {
+        const filter = inputResult(() => requestedMonth(url));
+        await ensureGoogleSources(filter);
         const storedLinks = await store.list();
-        const all = await Promise.all(storedLinks.map(view)); const filter = inputResult(() => requestedMonth(url));
+        const all = await Promise.all(storedLinks.map(view));
         const viewerGrants = session.user.role === 'admin' ? null : new Set(await auth.grantsForUser(session.user.id));
         const permitted = session.user.role === 'admin' ? all : all.filter(link => viewerGrants.has(link.id));
         const links = filter ? permitted.filter(link => link.reportMonth === filter) : permitted;
         const months = [...new Set(permitted.map(link => link.reportMonth).filter(Boolean))].sort().reverse();
-        return json(res, { links, groups: groups(links), months });
+        return json(res, { links, groups: groups(links), months, aggregate: aggregateReports(links, { reportMonth: filter }) });
       }
       if (req.method === 'POST' && url.pathname === '/api/links/preview') {
         requireAdmin(session); const input = await body(req); return json(res, safeLink(inputResult(() => identify(input))));
@@ -447,6 +464,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
       if (req.method === 'POST' && url.pathname === '/api/links/collect-all') {
         requireAdmin(session);
         const filter = inputResult(() => requestedMonth(url));
+        await ensureGoogleSources(filter);
         const links = (await store.list()).filter(link => !link.needsDates && (!filter || link.reportMonth === filter));
         const jobs = [];
         for (const link of links) jobs.push(await enqueue(link, { useCandidate: true }));
@@ -518,6 +536,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
     if (checkingSchedule || shuttingDown || !scheduleSettings().enabled) return;
     checkingSchedule = true;
     try {
+      await ensureGoogleSources();
       const parts = localScheduleParts(now());
       const date = `${parts.year}-${parts.month}-${parts.day}`;
       const time = `${parts.hour}:${parts.minute}`;
@@ -525,6 +544,9 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
       const jobs = await store.jobs();
       const alreadyScheduled = new Set(jobs.filter(job => job.scheduledDate === date).map(job => job.linkId));
       for (const link of await store.list()) {
+        // Do not turn monthly source creation into a background Google Ads
+        // request; manual collection still uses the same bounded queue.
+        if (link.connector === GOOGLE_CONNECTOR) continue;
         if (link.needsDates || alreadyScheduled.has(link.id)) continue;
         await enqueue(link, { useCandidate: true, scheduledDate: date });
         alreadyScheduled.add(link.id);

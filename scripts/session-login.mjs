@@ -7,6 +7,7 @@ import { chromium } from 'playwright';
 import { loadLocalConfig, source24hAllowInsecureHttp } from '../lib/config.mjs';
 import { openStore } from '../lib/link-store.mjs';
 import { acquireProfileLock, recoverProfilePromotion } from '../lib/source-session.mjs';
+import { browserLaunchOptions } from '../lib/browser-runtime.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 loadLocalConfig(root);
@@ -46,8 +47,7 @@ try {
   await recoverProfilePromotion(profile);
   mkdirSync(profile, { recursive: true, mode: 0o700 });
   chmodSync(profile, 0o700);
-  const launch = { headless: false, viewport: { width: 1440, height: 950 } };
-  if (process.env.CHROME_BIN) launch.executablePath = process.env.CHROME_BIN;
+  const launch = { headless: false, viewport: { width: 1440, height: 950 }, ...browserLaunchOptions() };
   context = await chromium.launchPersistentContext(profile, launch);
   closeOnLockLoss = profileLock.lost.then(() => context?.close().catch(() => {})).catch(() => {});
   const page = context.pages()[0] || await context.newPage();

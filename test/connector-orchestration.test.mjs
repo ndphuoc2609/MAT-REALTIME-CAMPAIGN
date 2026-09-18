@@ -95,6 +95,20 @@ function loginFixturePage(outcome, { preflight = 'ok', navigation = true } = {})
   };
 }
 
+function accessDeniedProbePage({ succeedAfterLogin = false } = {}) {
+  let probes = 0;
+  return {
+    url: () => 'https://khachhang.24h.com.vn/report',
+    async goto() {},
+    async evaluate(fn) {
+      if (!String(fn).includes('fetch(')) return false;
+      probes++;
+      if (!succeedAfterLogin || probes === 1) return { failure: { status: 403, contentType: 'text/html', accessDenied: true } };
+      return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
+    }
+  };
+}
+
 test('collect keeps a valid session on active profile and does not invoke login', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'admicro-collector-valid-'));
   const profile = sourceProfileDirectory(directory, '24h');
@@ -220,6 +234,40 @@ test('forced login skips denied report preprobe and verifies only after handler'
     assert.deepEqual(result, { authenticated: true, refreshed: true });
     assert.equal(handlerCalled, true);
     assert.equal(gotoCalls, 0);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
+test('initial 24h access-denied probe enters auto-login flow', async () => {
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  let loginCalls = 0;
+  try {
+    const result = await ensureAuthenticatedSession(accessDeniedProbePage({ succeedAfterLogin: true }), link(), {
+      directory: mkdtempSync(join(tmpdir(), 'admicro-access-denied-probe-login-')),
+      loginHandler: async () => { loginCalls++; }
+    });
+    assert.deepEqual(result, { authenticated: true, refreshed: true });
+    assert.equal(loginCalls, 1);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
+test('post-login 24h access-denied remains an access-denied failure', async () => {
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  try {
+    await assert.rejects(ensureAuthenticatedSession(accessDeniedProbePage(), link(), {
+      directory: mkdtempSync(join(tmpdir(), 'admicro-access-denied-post-login-')),
+      login: true,
+      probe: false,
+      loginHandler: async () => {}
+    }), error => {
+      assert.equal(error.status, 'access_denied');
+      return true;
+    });
   } finally {
     if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
   }

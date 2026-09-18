@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {identify,scope,days,total,reconcile,groups,safeLink} from '../lib/links.mjs';
+import {identify,scope,days,total,reconcile,groups,safeLink,aggregateReports} from '../lib/links.mjs';
 import {validateDisplayName,normalizedName} from '../lib/name-validation.mjs';
 import {endpoint24hPath,normalizeTable,normalize24Payload} from '../lib/connectors.mjs';
 import {createMemoryPersistence} from './support/memory-persistence.mjs';
@@ -43,6 +43,33 @@ test('unknown remains null, weighted CTR and range isolation',()=>{
   assert.equal(groups([{source:'Admicro',from:'2026-09-01',to:'2026-09-08'},{source:'Admicro',from:'2026-09-01',to:'2026-09-07'}]).length,2);
   assert.equal(reconcile({impressions:101,clicks:1},[{impressions:100,clicks:1}]).status,'mismatch');
   assert.equal(reconcile({impressions:101,clicks:1},[{impressions:null,clicks:null}]).status,'incomplete');
+});
+test('aggregate dashboard groups source ranges, deduplicates links, and calculates weighted totals',()=>{
+  const links=[
+    {id:'a1',source:'Admicro',connector:'admicro-pc',campaign:'1',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30',scope:'a1',result:{total:{impressions:100,clicks:10},daily:[{date:'2026-09-01',impressions:100,clicks:10}]}},
+    {id:'a1-duplicate',source:'Admicro',connector:'admicro-pc',campaign:'1',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30',scope:'a1-duplicate',result:{total:{impressions:100,clicks:10},daily:[{date:'2026-09-01',impressions:100,clicks:10}]}},
+    {id:'a2',source:'Admicro',connector:'admicro-pc',campaign:'2',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30',scope:'a2',result:{total:{impressions:50,clicks:5},daily:[{date:'2026-09-01',impressions:50,clicks:5}]}},
+    {id:'g',source:'Google Ads',connector:'google-ads',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30',scope:'g',result:{total:{impressions:200,clicks:0},daily:[{date:'2026-09-02',impressions:200,clicks:0}]}}
+  ];
+  const aggregate=aggregateReports(links,{reportMonth:'2026-09'});
+  assert.deepEqual(aggregate.total,{impressions:350,clicks:15,ctr:15/350*100});
+  assert.deepEqual(aggregate.sourceRows.map(row=>[row.source,row.from,row.to,row.linkCount]),[['Admicro','2026-09-01','2026-09-30',3],['Google Ads','2026-09-01','2026-09-30',1]]);
+  assert.deepEqual(aggregate.daily.map(row=>[row.date,row.impressions,row.clicks]),[['2026-09-01',150,15],['2026-09-02',200,0]]);
+  assert.deepEqual(aggregate.dailyTotal,{impressions:350,clicks:15,ctr:15/350*100});
+});
+test('aggregate dashboard preserves zero and unknown metrics and has an empty snapshot state',()=>{
+  const aggregate=aggregateReports([
+    {id:'zero',source:'Google Ads',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30',scope:'zero',result:{total:{impressions:0,clicks:0},daily:[{date:'2026-09-01',impressions:0,clicks:0}]}},
+    {id:'unknown',source:'24h',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30',scope:'unknown',result:{total:{impressions:10,clicks:null},daily:[{date:'2026-09-01',impressions:10,clicks:null}]}}
+  ],{reportMonth:'2026-09'});
+  assert.equal(aggregate.total.impressions,10);
+  assert.equal(aggregate.total.clicks,null);
+  assert.equal(aggregate.total.ctr,null);
+  assert.deepEqual(aggregate.dailyTotal,{impressions:10,clicks:null,ctr:null});
+  const empty=aggregateReports([{id:'idle',source:'FPT/VnExpress',reportMonth:'2026-09',from:'2026-09-01',to:'2026-09-30'}],{reportMonth:'2026-09'});
+  assert.equal(empty.hasSnapshot,false);
+  assert.equal(empty.complete,false);
+  assert.deepEqual(empty.total,{impressions:null,clicks:null,ctr:null});
 });
 test('never adds duplicate campaign links or unverified publisher scopes',()=>{
   const l={source:'Admicro',connector:'admicro-pc',campaign:'1',from:'2026-09-01',to:'2026-09-08',result:{total:{clicks:10}}};

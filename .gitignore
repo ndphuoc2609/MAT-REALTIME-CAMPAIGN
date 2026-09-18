@@ -17,3 +17,9 @@ restored-data/
 deploy/tls/
 *-state.json
 session-state*.json
+venv/
+client_secrets.json
+client_secret.json
+google_ads_credentials.json
+get_token.py
+test_ads_google.py

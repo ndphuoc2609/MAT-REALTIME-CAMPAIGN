@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { loadLocalConfig } from '../lib/config.mjs';
 import { acquireProfileLock, recoverProfilePromotion } from '../lib/source-session.mjs';
+import { browserLaunchOptions } from '../lib/browser-runtime.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 loadLocalConfig(root);
@@ -23,7 +24,7 @@ function usage() {
   process.exit(2);
 }
 function hostAllowed(host, base) { return host === base || host.endsWith(`.${base}`); }
-function browserLaunch() { const options = { headless: true }; if (process.env.CHROME_BIN) options.executablePath = process.env.CHROME_BIN; return options; }
+function browserLaunch() { return { headless: true, ...browserLaunchOptions() }; }
 
 if (!['export', 'import'].includes(operation) || !profiles[connector] || !fileArg) usage();
 const profile = resolve(directory, 'sessions', profiles[connector].profile);

@@ -22,6 +22,12 @@ test/
 docs/
 .agents/
 .codex/
+venv/
+client_secret.json
+client_secrets.json
+google_ads_credentials.json
+get_token.py
+test_ads_google.py
 app.mjs
 crawl_pc.mjs
 crawl_mobile.mjs
