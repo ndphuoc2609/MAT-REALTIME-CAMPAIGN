@@ -241,18 +241,55 @@ test('Google Ads detail UI contract renders three breakdown tables without campa
 
 test('aggregate dashboard UI renders the highlighted first card and report sections', () => {
   const source = readFileSync(new URL('../public/links.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../public/links.css', import.meta.url), 'utf8');
   assert.match(source, /data-action="aggregate"/);
-  assert.match(source, /aria-label="Mở báo cáo ADXs tổng hợp"/);
-  assert.match(source, /aggregate-card-kicker">Report · Tổng hợp/);
-  assert.match(source, /aggregate-card-title">ADXs/);
+  assert.match(source, /aria-label="Mở báo cáo ADs tổng hợp"/);
+  const cardStart = source.indexOf('function renderAggregateCard');
+  const cardEnd = source.indexOf('\nfunction render', cardStart + 1);
+  assert.ok(cardStart >= 0 && cardEnd > cardStart);
+  const card = source.slice(cardStart, cardEnd);
+  assert.match(card, /class="card source-card aggregate-card/);
+  assert.match(card, /selected==='__aggregate__'/);
+  assert.match(card, /aggregate-card-kicker">Report · Tổng hợp/);
+  assert.match(card, /source-card-title aggregate-card-title">ADs/);
+  assert.match(card, /aggregate-card-kpis source-card-kpis/);
+  assert.match(card, /aggregate-card-actions"><button type="button" class="quiet source-card-detail" data-action="aggregate">Xem chi tiết<\/button>/);
+  assert.equal((card.match(/<button\b/g)||[]).length, 1);
+  assert.match(styles, /#cards \.aggregate-card \{[^}]*border-left: 4px solid var\(--mat-accent\)/);
+  assert.match(styles, /\.aggregate-card-actions \.source-card-detail \{[^}]*width: 100%; flex: 1 1 100%/);
   assert.match(source, /innerHTML=renderAggregateCard\(state\.aggregate\|\|\{\}\)\+sourceCards/);
+  assert.match(source, /selected='__aggregate__';\$\('#detail'\)\.hidden=false/);
   const start = source.indexOf('function renderAggregateDetail');
   const end = source.indexOf('function renderAggregateCard', start);
   assert.ok(start >= 0 && end > start);
   const detail = source.slice(start, end);
+  assert.match(detail, /const sourceBreakdown=currentUser\?\.role==='admin'\?/);
+  assert.match(detail, /\$\{sourceBreakdown\}/);
   assert.match(detail, /Tổng hợp theo nguồn và khoảng ngày/);
   assert.match(detail, /Tổng hợp theo ngày/);
   assert.match(detail, /Chưa có snapshot/);
+});
+
+test('viewer source cards keep report metrics, hide operations, and use ADs labels', () => {
+  const source = readFileSync(new URL('../public/links.js', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/links.html', import.meta.url), 'utf8');
+  const renderStart = source.indexOf('function render(){');
+  const renderEnd = source.indexOf('const reportHeads=', renderStart);
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  const render = source.slice(renderStart, renderEnd);
+  assert.match(render, /const viewerKpis=admin\?'':/);
+  assert.match(render, /l\.result\?\.total\?\.impressions/);
+  assert.match(render, /l\.result\?\.total\?\.clicks/);
+  assert.match(render, /l\.result\?\.total\?\.ctr/);
+  assert.match(render, /const sourceCardOperations=admin\?`<span class="status source-card-status/);
+  assert.match(render, /sourceCardOperations\}<div class="actions source-card-actions"/);
+  assert.match(render, /source-card-message/);
+  assert.match(render, /source-card-updated/);
+  assert.match(render, /Đang giữ dữ liệu lần trước hoặc dữ liệu cần đối soát/);
+  assert.match(source, /aria-label="Mở báo cáo ADs tổng hợp"/);
+  assert.match(source, /aggregate-card-title">ADs/);
+  assert.match(html, /class="panel summary-panel admin-only" hidden/);
+  assert.match(source, /const technicalHint=currentUser\?\.role==='admin'\?/);
 });
 
 test('HTTP routes materialize, filter, enqueue, and snapshot one monthly Google source', async () => {
