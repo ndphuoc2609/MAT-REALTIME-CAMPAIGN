@@ -95,7 +95,7 @@ function loginFixturePage(outcome, { preflight = 'ok', navigation = true } = {})
   };
 }
 
-function accessDeniedProbePage({ succeedAfterLogin = false } = {}) {
+function accessDeniedProbePage({ succeedAfterLogin = false, deniedResponses = succeedAfterLogin ? 1 : Infinity, status = 200 } = {}) {
   let probes = 0;
   return {
     url: () => 'https://khachhang.24h.com.vn/report',
@@ -103,7 +103,7 @@ function accessDeniedProbePage({ succeedAfterLogin = false } = {}) {
     async evaluate(fn) {
       if (!String(fn).includes('fetch(')) return false;
       probes++;
-      if (!succeedAfterLogin || probes === 1) return { failure: { status: 403, contentType: 'text/html', accessDenied: true } };
+      if (probes <= deniedResponses) return { failure: { status, contentType: 'text/html', html: true, accessDenied: true } };
       return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
     }
   };
@@ -133,6 +133,32 @@ test('collect recovers one mid-read expiry and records the bounded recovery', as
       return completePeriod();
     }), ensureSession: async (_page, _link, options) => { if (options.force) recoveries++; } });
     assert.equal(result.complete, true);
+    assert.equal(recoveries, 1);
+    assert.equal(job.authRecoveryAttempts, 1);
+    assert.equal(job.retries, 1);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
+test('collect recovers one mid-read ambiguous 24h denial and then succeeds', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-collector-ambiguous-read-'));
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  let reads = 0; let recoveries = 0;
+  try {
+    const job = {};
+    const result = await collect(link(), { directory, job, browser: fixtureBrowser(), adapterMap: fixtureAdapter(async () => {
+      reads++;
+      if (reads === 1) {
+        const error = new SourceError('session response was ambiguous', 'access_denied');
+        error.ambiguousSession = true;
+        throw error;
+      }
+      return completePeriod();
+    }), ensureSession: async (_page, _link, options) => { if (options.force) recoveries++; } });
+    assert.equal(result.complete, true);
+    assert.equal(reads, 2);
     assert.equal(recoveries, 1);
     assert.equal(job.authRecoveryAttempts, 1);
     assert.equal(job.retries, 1);
@@ -210,6 +236,33 @@ test('real coordinator stages before login when protected AJAX probe expires', a
   }
 });
 
+test('probe-driven candidate login passes the replacement page to the handler', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-collector-page-handoff-'));
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  const browser = fixtureBrowser({ probeFailures: 1 });
+  let receivedPage;
+  let receivedPageClosed;
+  try {
+    await collect(link(), {
+      directory,
+      browser,
+      loginHandler: async page => {
+        receivedPage = page;
+        receivedPageClosed = page.closed;
+        page.current = 'https://khachhang.24h.com.vn/report';
+      },
+      adapterMap: fixtureAdapter(async () => completePeriod())
+    });
+    assert.equal(browser.contexts.length, 2);
+    assert.equal(browser.contexts[0].page.closed, true);
+    assert.equal(receivedPage, browser.contexts[1].page);
+    assert.notEqual(receivedPageClosed, true);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
 test('forced login skips denied report preprobe and verifies only after handler', async () => {
   const report = link();
   let gotoCalls = 0;
@@ -255,19 +308,57 @@ test('initial 24h access-denied probe enters auto-login flow', async () => {
   }
 });
 
+test('ambiguous post-login 24h access-denied gets one bounded recovery', async () => {
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  let loginCalls = 0;
+  try {
+    const result = await ensureAuthenticatedSession(accessDeniedProbePage({ deniedResponses: 2 }), link(), {
+      directory: mkdtempSync(join(tmpdir(), 'admicro-access-denied-recovery-')),
+      loginHandler: async () => { loginCalls++; }
+    });
+    assert.deepEqual(result, { authenticated: true, refreshed: true });
+    assert.equal(loginCalls, 2);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
 test('post-login 24h access-denied remains an access-denied failure', async () => {
   const previous = process.env.SOURCE_24H_AUTO_LOGIN;
   process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  let loginCalls = 0;
   try {
     await assert.rejects(ensureAuthenticatedSession(accessDeniedProbePage(), link(), {
       directory: mkdtempSync(join(tmpdir(), 'admicro-access-denied-post-login-')),
       login: true,
       probe: false,
-      loginHandler: async () => {}
+      loginHandler: async () => { loginCalls++; }
     }), error => {
       assert.equal(error.status, 'access_denied');
       return true;
     });
+    assert.equal(loginCalls, 2);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
+test('genuine 24h HTTP 403 access-denied is not treated as session ambiguity', async () => {
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  let loginCalls = 0;
+  try {
+    await assert.rejects(ensureAuthenticatedSession(accessDeniedProbePage({ status: 403 }), link(), {
+      directory: mkdtempSync(join(tmpdir(), 'admicro-http-403-denied-')),
+      login: true,
+      probe: false,
+      loginHandler: async () => { loginCalls++; }
+    }), error => {
+      assert.equal(error.status, 'access_denied');
+      return true;
+    });
+    assert.equal(loginCalls, 1);
   } finally {
     if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
   }

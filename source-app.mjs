@@ -11,6 +11,7 @@ import { housekeepingConfig, loadLocalConfig, source24hAutoLoginEnabled, sourceA
 import { openAuthStore } from './lib/auth-store.mjs';
 import { createPostgresPool } from './lib/postgres-persistence.mjs';
 import { collect, closeBrowserContexts, sourceProfileDirectory, isTransientNetworkError } from './lib/connectors.mjs';
+import { SourceError } from './lib/source-error.mjs';
 import { ensureGoogleAdsMonthlyLinks, GOOGLE_CONNECTOR } from './lib/google-ads.mjs';
 import { authCircuit, promoteVerifiedProfile, recoverProfilePromotion, resetAuthCircuit, withProfileLock } from './lib/source-session.mjs';
 import { hasActiveSyncJobs, runHousekeeping } from './lib/housekeeping.mjs';
@@ -26,13 +27,38 @@ const SCHEDULE_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const DEFAULT_SCHEDULE_TIME = '02:00';
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
+const knownJobStatuses = new Set([
+  'success', 'partial', 'error', 'network_error', 'auth_required', 'auth_blocked',
+  'authentication_failed', 'authentication_pending', 'invalid_credentials', 'config_error',
+  'schema_error', 'access_denied', 'http_error', 'needs_inspection', 'transport_security',
+  'interactive_auth_required', 'debug_unsafe', 'session_busy'
+]);
+const storageErrorCodes = new Set(['EACCES', 'EPERM', 'EROFS']);
+const diskErrorCodes = new Set(['ENOSPC', 'EDQUOT']);
+const browserRuntimeError = /(?:browserType\.(?:launch|launchPersistentContext)|(?:chrom(?:e|ium)|playwright).*(?:launch|executable|browser)|executable(?:\s+doesn't|\s+does not|\s+not)?\s+exist|browser\s+(?:was\s+)?not\s+found|failed\s+to\s+launch|spawn\s+(?:chrome|chromium)|target\s+(?:page|context|browser)\s+or\s+browser\s+has\s+been\s+closed)/i;
+export function classifyJobError(error) {
+  if (error instanceof HttpError || error instanceof SourceError) return error;
+  if (error && (typeof error.status === 'number' || knownJobStatuses.has(String(error.status || '')))) return error;
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '');
+  const location = String(error?.path || error?.filename || '');
+  const storageLocation = /(?:[\\/]data(?:[\\/]|$)|sessions|profile|data_dir)/i.test(`${message} ${location}`);
+  if (storageErrorCodes.has(code) || (['ENOENT', 'ENOTDIR'].includes(code) && storageLocation) || /(?:permission denied|operation not permitted|read-only file system)/i.test(message)) {
+    return new SourceError('Máy chủ không có quyền đọc/ghi DATA_DIR hoặc hồ sơ nguồn. Kiểm tra quyền thư mục và profile rồi chạy lại.', 'config_error');
+  }
+  if (diskErrorCodes.has(code) || /(?:no space left on device|disk quota exceeded|out of disk space)/i.test(message)) {
+    return new SourceError('Ổ đĩa máy chủ không còn đủ dung lượng cho DATA_DIR hoặc hồ sơ nguồn. Giải phóng dung lượng rồi chạy lại.', 'config_error');
+  }
+  if (browserRuntimeError.test(message) || /(?:chrom(?:e|ium)|playwright)/i.test(location)) {
+    return new SourceError('Không khởi động được browser runtime cho nguồn. Kiểm tra Google Chrome/Chromium, CHROME_BIN và quyền chạy rồi thử lại.', 'config_error');
+  }
+  return new SourceError('Lỗi runtime khi đồng bộ nguồn. Kiểm tra log máy chủ và cấu hình runtime rồi thử lại.', 'error');
+}
 const json = (res, data, status = 200) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
   res.end(JSON.stringify(data));
 };
-const safeError = error => error instanceof HttpError || error.status === 'auth_required'
-  ? error.message
-  : error.status ? error.message : 'The request could not be completed.';
+const safeError = error => classifyJobError(error).message;
 const inputResult = callback => {
   try { return callback(); }
   catch (error) { if (error instanceof HttpError) throw error; throw new HttpError(400, error.message || 'Invalid input.'); }
@@ -281,6 +307,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
               if (shuttingDown) { job.status = 'queued'; job.message = 'Đã lưu vào hàng đợi; sẽ tiếp tục sau khi máy chủ khởi động lại.'; await store.putJob(job); break; }
               const retries = Number(job.retries || 0);
               const transient = transientError(error);
+              const classified = classifyJobError(error);
               if (retries < maxRetries && transient) {
                 job.retries = retries + 1;
                 const delay = retryDelayMs * (2 ** retries);
@@ -290,10 +317,10 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
                 await store.putJob(job);
                 continue;
               }
-              job.status = transient ? 'network_error' : error.status || 'error';
+              job.status = transient ? 'network_error' : classified.status || 'error';
               job.message = transient
                 ? `Không thể kết nối tới nguồn hoặc đã hết thời gian chờ sau ${Number(job.attempts || 1)} lần thử. Kiểm tra kết nối mạng, DNS, firewall/proxy rồi chạy lại thủ công.`
-                : safeError(error);
+                : classified.message;
               job.finishedAt = new Date().toISOString(); await store.putJob(job);
               break;
             }
