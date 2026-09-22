@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { identify, scope } from '../lib/links.mjs';
 import { collect, SourceError, ensureAuthenticatedSession, classify24Response, classify24LoginText, classifyAdmicroLoginText, sourceProfileDirectory } from '../lib/connectors.mjs';
+import { authCircuit, tripAuthCircuit } from '../lib/source-session.mjs';
 
 const link = () => {
   const value = identify({ name: 'Fixture 24h', url: 'https://khachhang.24h.com.vn/ocm/lineitem/index/?c_statistic_from_date=01-09-2026&c_statistic_to_date=01-09-2026' });
@@ -51,8 +52,9 @@ function completePeriod() {
   return { total: { impressions: 10, clicks: 2, spend: 3, engagement: null, viewers: null, ctr: 20 }, details: [] };
 }
 
-function loginFixturePage(outcome, { preflight = 'ok', navigation = true } = {}) {
+function loginFixturePage(outcome, { preflight = 'ok', navigation = true, deniedResponses = 0 } = {}) {
   let current = 'https://khachhang.24h.com.vn/ocm/user/login?login=1';
+  let remainingDeniedResponses = deniedResponses;
   const pageState = { fills: 0 };
   const routes = new Map();
   const listeners = new Map();
@@ -87,7 +89,13 @@ function loginFixturePage(outcome, { preflight = 'ok', navigation = true } = {})
     off(event, handler) { if (listeners.get(event) === handler) listeners.delete(event); },
     async evaluate(fn) {
       const source = String(fn);
-      if (source.includes('fetch(')) return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
+      if (source.includes('fetch(')) {
+        if (remainingDeniedResponses > 0) {
+          remainingDeniedResponses--;
+          return { failure: { status: 200, contentType: 'text/html', html: true, accessDenied: true } };
+        }
+        return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
+      }
       if (source.includes('password') || source.includes('location.pathname')) return outcome === 'success' ? false : true;
       return false;
     },
@@ -318,7 +326,7 @@ test('ambiguous post-login 24h access-denied gets one bounded recovery', async (
       loginHandler: async () => { loginCalls++; }
     });
     assert.deepEqual(result, { authenticated: true, refreshed: true });
-    assert.equal(loginCalls, 2);
+    assert.equal(loginCalls, 1);
   } finally {
     if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
   }
@@ -338,7 +346,7 @@ test('post-login 24h access-denied remains an access-denied failure', async () =
       assert.equal(error.status, 'access_denied');
       return true;
     });
-    assert.equal(loginCalls, 2);
+    assert.equal(loginCalls, 1);
   } finally {
     if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
   }
@@ -480,6 +488,167 @@ test('ambiguous submit is latched and never retried automatically', async () => 
     if (previous.enabled == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous.enabled;
     if (previous.username == null) delete process.env.SOURCE_24H_USERNAME; else process.env.SOURCE_24H_USERNAME = previous.username;
     if (previous.password == null) delete process.env.SOURCE_24H_PASSWORD; else process.env.SOURCE_24H_PASSWORD = previous.password;
+  }
+});
+
+test('stale login_in_progress circuit permits one real fixture submit', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-login-stale-circuit-'));
+  try {
+    await tripAuthCircuit(directory, '24h', 'login_in_progress');
+    const state = JSON.parse(readFileSync(join(directory, 'source-auth-circuit.json'), 'utf8'));
+    state['24h'].at = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+    writeFileSync(join(directory, 'source-auth-circuit.json'), JSON.stringify(state));
+    const page = loginFixturePage('success');
+    const result = await ensureAuthenticatedSession(page, link(), { directory, login: true, probe: false });
+    assert.deepEqual(result, { authenticated: true, refreshed: true });
+    assert.equal(page._state().fills, 2);
+    assert.equal(await authCircuit(directory, '24h'), null);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('stale invalid credentials and interactive circuits remain hard blocks', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  try {
+    for (const reason of ['invalid_credentials', 'interactive_auth_required']) {
+      const directory = mkdtempSync(join(tmpdir(), `admicro-login-stale-hard-${reason}-`));
+      await tripAuthCircuit(directory, '24h', reason);
+      const circuitPath = join(directory, 'source-auth-circuit.json');
+      const state = JSON.parse(readFileSync(circuitPath, 'utf8'));
+      state['24h'].at = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+      writeFileSync(circuitPath, JSON.stringify(state));
+      const page = loginFixturePage('success');
+      await assert.rejects(ensureAuthenticatedSession(page, link(), { directory, login: true, probe: false }), error => error.status === 'auth_blocked');
+      assert.equal(page._state().fills, 0);
+      assert.equal((await authCircuit(directory, '24h')).reason, reason);
+    }
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('real failed submit refreshes temporary circuit and blocks the next submit', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-login-refresh-circuit-'));
+  try {
+    await tripAuthCircuit(directory, '24h', 'authentication_failed');
+    const circuitPath = join(directory, 'source-auth-circuit.json');
+    const state = JSON.parse(readFileSync(circuitPath, 'utf8'));
+    const oldAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+    state['24h'].at = oldAt;
+    writeFileSync(circuitPath, JSON.stringify(state));
+    await assert.rejects(ensureAuthenticatedSession(loginFixturePage('success', { navigation: false }), link(), { directory, login: true, probe: false }), error => error.status === 'authentication_pending');
+    const refreshed = await authCircuit(directory, '24h');
+    assert.ok(Date.parse(refreshed.at) > Date.parse(oldAt));
+    const nextPage = loginFixturePage('success');
+    await assert.rejects(ensureAuthenticatedSession(nextPage, link(), { directory, login: true, probe: false }), error => error.status === 'auth_blocked' && /sau khoảng/.test(error.message));
+    assert.equal(nextPage._state().fills, 0);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('successful protected candidate probe clears temporary circuit without submit', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-login-candidate-probe-'));
+  try {
+    await tripAuthCircuit(directory, '24h', 'login_in_progress');
+    const candidate = accessDeniedProbePage({ deniedResponses: 0 });
+    const result = await ensureAuthenticatedSession(loginFixturePage('success'), link(), {
+      directory, job: { useCandidate: true }, login: true, probe: false,
+      beforeLogin: async () => candidate
+    });
+    assert.deepEqual(result, { authenticated: true, refreshed: true });
+    assert.equal(await authCircuit(directory, '24h'), null);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('candidate probe propagates unknown errors and genuine HTTP 403 without submitting', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  try {
+    const unknownDirectory = mkdtempSync(join(tmpdir(), 'admicro-login-candidate-unknown-'));
+    await tripAuthCircuit(unknownDirectory, '24h', 'login_in_progress');
+    const unknownAt = (await authCircuit(unknownDirectory, '24h')).at;
+    const browserError = new TypeError('fixture browser failure');
+    const unknownCandidate = { url: () => 'https://khachhang.24h.com.vn/report', async evaluate() { throw browserError; } };
+    await assert.rejects(ensureAuthenticatedSession(loginFixturePage('success'), link(), {
+      directory: unknownDirectory, job: { useCandidate: true }, login: true, probe: false,
+      beforeLogin: async () => unknownCandidate,
+      loginHandler: async () => { throw new Error('credential submit must not run'); }
+    }), error => error === browserError);
+    assert.equal((await authCircuit(unknownDirectory, '24h')).at, unknownAt);
+
+    const deniedDirectory = mkdtempSync(join(tmpdir(), 'admicro-login-candidate-403-'));
+    await tripAuthCircuit(deniedDirectory, '24h', 'login_in_progress');
+    const deniedAt = (await authCircuit(deniedDirectory, '24h')).at;
+    await assert.rejects(ensureAuthenticatedSession(loginFixturePage('success'), link(), {
+      directory: deniedDirectory, job: { useCandidate: true }, login: true, probe: false,
+      beforeLogin: async () => accessDeniedProbePage({ status: 403 }),
+      loginHandler: async () => { throw new Error('credential submit must not run'); }
+    }), error => error.status === 'access_denied');
+    assert.equal((await authCircuit(deniedDirectory, '24h')).at, deniedAt);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('real ambiguous post-submit denial performs one submit and retains cooldown circuit', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-login-real-ambiguous-'));
+  try {
+    const page = loginFixturePage('success', { deniedResponses: 2 });
+    await assert.rejects(ensureAuthenticatedSession(page, link(), { directory, login: true, probe: false }), error => error.status === 'access_denied');
+    assert.equal(page._state().fills, 2);
+    const circuit = await authCircuit(directory, '24h');
+    assert.deepEqual(circuit.reason, 'login_in_progress');
+    assert.ok(Date.now() - Date.parse(circuit.at) < 60_000);
+    const nextPage = loginFixturePage('success');
+    await assert.rejects(ensureAuthenticatedSession(nextPage, link(), { directory, login: true, probe: false }), error => error.status === 'auth_blocked');
+    assert.equal(nextPage._state().fills, 0);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('malformed or unknown open 24h circuits fail closed', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  try {
+    for (const reason of ['login_in_progress', 'unknown_reason']) {
+      const directory = mkdtempSync(join(tmpdir(), `admicro-login-invalid-circuit-${reason}-`));
+      await tripAuthCircuit(directory, '24h', reason);
+      const circuitPath = join(directory, 'source-auth-circuit.json');
+      const state = JSON.parse(readFileSync(circuitPath, 'utf8'));
+      if (reason === 'login_in_progress') state['24h'].at = 'not-a-timestamp';
+      writeFileSync(circuitPath, JSON.stringify(state));
+      await assert.rejects(ensureAuthenticatedSession(loginFixturePage('success'), link(), { directory, login: true, probe: false }), error => error.status === 'auth_blocked');
+    }
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 

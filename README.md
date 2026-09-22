@@ -99,12 +99,24 @@ For unattended 24h collection, configure `SOURCE_24H_USERNAME`,
 `SOURCE_24H_PASSWORD`, and `SOURCE_24H_AUTO_LOGIN=true` in the server runtime
 environment (or untracked `.env`), then restart the app. If the provider
 rejects the credentials or requests OTP/CAPTCHA/device confirmation, automatic
-login opens a durable circuit and stops trying. Correct the server secret or
-complete a manual session refresh, then an administrator can clear the circuit
-with `POST /api/sessions/24h/reset-auth` using the existing admin session and
-CSRF token. The automatic form keeps the public form's default customer account
+login opens a durable circuit and stops trying. Invalid credentials and
+interactive verification remain hard blocks and do not expire automatically;
+a successful manually refreshed protected report still clears the circuit as
+part of the existing session verification flow, otherwise an administrator
+can reset it. Ambiguous 24h submit states are temporary:
+`login_in_progress`, `authentication_pending`, and `authentication_failed`
+block for 15 minutes from the durable timestamp; an older state permits one
+submit on the next invocation. Before that submit, an existing pending
+candidate is checked with one bounded, read-only protected-report probe so a
+successful earlier submit is not duplicated. There is no background timer or
+automatic retry after 15 minutes—the next scheduled or manually triggered job
+performs the check. Correct the server secret or complete a manual session
+refresh, then an administrator can clear the circuit with
+`POST /api/sessions/24h/reset-auth` using the existing admin session and CSRF
+token. The automatic form keeps the public form's default customer account
 type (`accountType=1`); staff account login is not enabled by these variables.
-Credentials are never accepted from the browser API.
+Credentials are never accepted from the browser API. This bounded recovery
+does not bypass CAPTCHA, OTP, or other interactive verification.
 
 For unattended Admicro PC or Mobile collection, configure
 `SOURCE_ADMICRO_USERNAME`, `SOURCE_ADMICRO_PASSWORD`, and
