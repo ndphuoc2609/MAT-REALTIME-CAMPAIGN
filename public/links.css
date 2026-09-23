@@ -188,6 +188,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .standard-report-cards article, .report-cards article { min-width: 0; border: 1px solid var(--mat-border); border-radius: 8px; padding: 12px 14px; background: #fff; }
 .standard-report-cards strong, .report-cards strong { display: block; color: var(--mat-muted); font-size: 11px; }
 .standard-report-cards b, .report-cards b { display: block; margin-top: 4px; color: var(--mat-heading); font-size: 21px; line-height: 1.2; overflow-wrap: anywhere; }
+.google-ads-channel-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.google-ads-channel-card { display: flex; flex-direction: column; gap: 12px; }
+.google-ads-channel-heading { margin: 0; color: var(--mat-heading); font-size: 15px; }
+.google-ads-channel-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; margin-top: auto; }
+.google-ads-channel-metric { min-width: 0; border: 1px solid var(--mat-border); border-radius: 7px; padding: 8px 9px; background: var(--mat-surface-muted); }
+.google-ads-channel-metric span { display: block; color: var(--mat-muted); font-size: 11px; line-height: 1.25; }
+.google-ads-channel-metric b { display: block; margin-top: 4px; color: var(--mat-heading); font-size: 18px; line-height: 1.2; overflow-wrap: anywhere; }
 .standard-report-table, .admicro-table { min-width: 660px; }
 .standard-detail .creative-table, .admicro-detail .creative-table { min-width: 780px; }
 .standard-detail .creative-table td:first-child { min-width: 230px; white-space: normal; overflow-wrap: anywhere; }

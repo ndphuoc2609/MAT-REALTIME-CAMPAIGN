@@ -80,13 +80,29 @@ test('SearchStream rows flatten, filter to bounds, aggregate by date, and preser
   assert.equal(unknown.total.clicks, null);
 });
 
+test('Google Ads campaign aggregation splits GDN and SEM while retaining unknown channel types', () => {
+  const result = aggregateGoogleAdsRows([
+    { segments: { date: '2026-08-01' }, campaign: { advertisingChannelType: 'DISPLAY' }, metrics: { impressions: '10', clicks: '2' } },
+    { segments: { date: '2026-08-01' }, campaign: { advertisingChannelType: 'SEARCH' }, metrics: { impressions: '20', clicks: '4' } },
+    { segments: { date: '2026-08-02' }, campaign: { advertisingChannelType: 'VIDEO' }, metrics: { impressions: '5', clicks: '1' } },
+    { segments: { date: '2026-08-02' }, metrics: { impressions: '3', clicks: '0' } }
+  ], { from: '2026-08-01', to: '2026-08-31' });
+
+  assert.deepEqual(result.total, { impressions: 38, clicks: 7, ctr: 7 / 38 * 100 });
+  assert.deepEqual(result.channels.gdn.total, { impressions: 10, clicks: 2, ctr: 20 });
+  assert.deepEqual(result.channels.gdn.daily, [{ date: '2026-08-01', impressions: 10, clicks: 2, ctr: 20 }]);
+  assert.deepEqual(result.channels.sem.total, { impressions: 20, clicks: 4, ctr: 20 });
+  assert.deepEqual(result.channels.unknown.VIDEO.total, { impressions: 5, clicks: 1, ctr: 20 });
+  assert.deepEqual(result.channels.unknown.UNKNOWN.total, { impressions: 3, clicks: 0, ctr: 0 });
+});
+
 test('Google Ads collector performs OAuth and SearchStream with required headers/query', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
     if (calls.length === 1) return response(200, { access_token: 'access-token-fixture' });
     const rows = {
-      2: [{ segments: { date: '2026-08-31' }, metrics: { impressions: '7', clicks: '2' } }],
+      2: [{ segments: { date: '2026-08-31' }, campaign: { advertisingChannelType: 'DISPLAY' }, metrics: { impressions: '7', clicks: '2' } }],
       3: [{ segments: { date: '2026-08-31' }, adGroupCriterion: { keyword: { text: 'SUV', matchType: 'EXACT' } }, metrics: { impressions: '4', clicks: '1' } }],
       4: [{ segments: { date: '2026-08-31' }, adGroupCriterion: { gender: { type: 'MALE' } }, metrics: { impressions: '2', clicks: '1' } }],
       5: [{ segments: { date: '2026-08-31' }, adGroupCriterion: { ageRange: { type: 'AGE_RANGE_25_34' } }, metrics: { impressions: '1', clicks: '0' } }]
@@ -102,7 +118,7 @@ test('Google Ads collector performs OAuth and SearchStream with required headers
   assert.equal(calls[1].options.headers['login-customer-id'], '1352189664');
   const queries = calls.slice(1).map(call => JSON.parse(call.options.body).query);
   assert.deepEqual(queries, [
-    "SELECT segments.date, metrics.impressions, metrics.clicks FROM campaign WHERE segments.date BETWEEN '2026-08-01' AND '2026-08-31'",
+    "SELECT segments.date, campaign.advertising_channel_type, metrics.impressions, metrics.clicks FROM campaign WHERE segments.date BETWEEN '2026-08-01' AND '2026-08-31'",
     "SELECT segments.date, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, metrics.impressions, metrics.clicks FROM keyword_view WHERE segments.date BETWEEN '2026-08-01' AND '2026-08-31'",
     "SELECT segments.date, ad_group_criterion.gender.type, metrics.impressions, metrics.clicks FROM gender_view WHERE segments.date BETWEEN '2026-08-01' AND '2026-08-31'",
     "SELECT segments.date, ad_group_criterion.age_range.type, metrics.impressions, metrics.clicks FROM age_range_view WHERE segments.date BETWEEN '2026-08-01' AND '2026-08-31'"
@@ -114,6 +130,8 @@ test('Google Ads collector performs OAuth and SearchStream with required headers
   assert.match(GOOGLE_ADS_QUERY, /segments\.date/);
   assert.deepEqual(Object.keys(GOOGLE_ADS_BREAKDOWN_QUERIES).sort(), ['ages', 'genders', 'keywords']);
   assert.deepEqual(result.total, { impressions: 7, clicks: 2, ctr: 2 / 7 * 100 });
+  assert.deepEqual(result.channels.gdn.total, { impressions: 7, clicks: 2, ctr: 2 / 7 * 100 });
+  assert.deepEqual(result.channels.sem.total, { impressions: null, clicks: null, ctr: null });
   assert.deepEqual(result.keywords[0], { keyword: 'SUV', matchType: 'EXACT', impressions: 4, clicks: 1, ctr: 25 });
   assert.deepEqual(result.genders[0], { gender: 'MALE', impressions: 2, clicks: 1, ctr: 50 });
   assert.deepEqual(result.ages[0], { ageRange: 'AGE_RANGE_25_34', impressions: 1, clicks: 0, ctr: 0 });
@@ -225,6 +243,7 @@ test('monthly source materialization is local and does not invoke fetch', async 
 
 test('Google Ads detail UI contract renders three breakdown tables without campaign detail', () => {
   const source = readFileSync(new URL('../public/links.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../public/links.css', import.meta.url), 'utf8');
   const start = source.indexOf('const googleAdsLabels=');
   const end = source.indexOf('function renderDetail', start);
   assert.ok(start >= 0 && end > start);
@@ -232,6 +251,16 @@ test('Google Ads detail UI contract renders three breakdown tables without campa
   assert.match(googleDetail, /renderGoogleAdsBreakdown\('Theo từ khóa',r\.keywords,'keyword'\)/);
   assert.match(googleDetail, /renderGoogleAdsBreakdown\('Theo giới tính',r\.genders,'gender'\)/);
   assert.match(googleDetail, /renderGoogleAdsBreakdown\('Theo độ tuổi',r\.ages,'age'\)/);
+  assert.match(googleDetail, /renderGoogleAdsChannelSummary\(r\.channels\)/);
+  assert.match(googleDetail, /data-channel="\$\{key\}"/);
+  assert.match(googleDetail, /renderCard\('gdn','GDN',channels\.gdn\)/);
+  assert.match(googleDetail, /renderCard\('sem','SEM',channels\.sem\)/);
+  assert.match(googleDetail, /google-ads-channel-heading/);
+  assert.match(googleDetail, /google-ads-channel-metrics/);
+  assert.equal((googleDetail.match(/class="google-ads-channel-metric"/g)||[]).length, 3);
+  assert.match(styles, /\.google-ads-channel-cards \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /\.google-ads-channel-metrics \{[^}]*display: grid/);
+  assert.match(styles, /\.google-ads-channel-metrics \{[^}]*repeat\(auto-fit, minmax\(100px, 1fr\)\)/);
   assert.match(googleDetail, /Từ khóa/);
   assert.match(googleDetail, /Giới tính/);
   assert.match(googleDetail, /Độ tuổi/);

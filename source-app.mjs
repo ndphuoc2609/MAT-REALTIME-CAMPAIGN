@@ -13,6 +13,7 @@ import { createPostgresPool } from './lib/postgres-persistence.mjs';
 import { collect, closeBrowserContexts, sourceProfileDirectory, isTransientNetworkError } from './lib/connectors.mjs';
 import { SourceError } from './lib/source-error.mjs';
 import { ensureGoogleAdsMonthlyLinks, GOOGLE_CONNECTOR } from './lib/google-ads.mjs';
+import { META_CONNECTOR } from './lib/meta-ads.mjs';
 import { authCircuit, promoteVerifiedProfile, recoverProfilePromotion, resetAuthCircuit, withProfileLock } from './lib/source-session.mjs';
 import { hasActiveSyncJobs, runHousekeeping } from './lib/housekeeping.mjs';
 
@@ -175,7 +176,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
     for (const link of await store.list()) {
       // Monthly Google sources are materialized automatically, but provider
       // calls remain explicit through the queue actions in the UI/API.
-      if (link.connector === GOOGLE_CONNECTOR) continue;
+      if (link.connector === GOOGLE_CONNECTOR || link.connector === META_CONNECTOR) continue;
       if (!link.needsDates && !await store.result(link)) await enqueue(link, { useCandidate: true, scheduledDate });
     }
   }
@@ -241,7 +242,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
     }
     const running = active.find(job => job.status === 'running');
     if (running) {
-      const candidatePending = useCandidate && link.connector !== GOOGLE_CONNECTOR && existsSync(`${sourceProfileDirectory(directory, link.connector)}.pending`);
+      const candidatePending = useCandidate && link.connector !== GOOGLE_CONNECTOR && link.connector !== META_CONNECTOR && existsSync(`${sourceProfileDirectory(directory, link.connector)}.pending`);
       // A scheduled active-profile crawl must not consume the administrator's
       // next explicit candidate test. Queue the candidate behind it instead.
       if (!candidatePending || running.useCandidate) {
@@ -272,7 +273,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
             job.message = 'Đang mở phiên nguồn đã cấu hình.'; await store.putJob(job);
             try {
               const collectWithLock = async () => {
-                if (link.connector === GOOGLE_CONNECTOR) {
+                if (link.connector === GOOGLE_CONNECTOR || link.connector === META_CONNECTOR) {
                   return collector(link, { directory, projectRoot, job, update: () => store.putJob(job), retryBudget: maxRetries });
                 }
                 const activeProfile = sourceProfileDirectory(directory, link.connector);
@@ -482,7 +483,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
         if (link.needsDates) throw new HttpError(400, 'Choose a complete date range.');
         if (existingLinks.some(existing => existing.scope === scope(link))) throw new HttpError(409, 'This link and date range already exist.');
         link.id = randomUUID(); link.scope = scope(link); link.status = 'idle'; await store.put(link);
-        if (scheduleSettings().enabled) {
+        if (scheduleSettings().enabled && link.connector !== META_CONNECTOR) {
           const parts = localScheduleParts(now());
           await enqueue(link, { useCandidate: true, scheduledDate: `${parts.year}-${parts.month}-${parts.day}` });
         }
@@ -571,9 +572,8 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
       const jobs = await store.jobs();
       const alreadyScheduled = new Set(jobs.filter(job => job.scheduledDate === date).map(job => job.linkId));
       for (const link of await store.list()) {
-        // Do not turn monthly source creation into a background Google Ads
-        // request; manual collection still uses the same bounded queue.
-        if (link.connector === GOOGLE_CONNECTOR) continue;
+        // API sources require an explicit per-source collection action.
+        if (link.connector === GOOGLE_CONNECTOR || link.connector === META_CONNECTOR) continue;
         if (link.needsDates || alreadyScheduled.has(link.id)) continue;
         await enqueue(link, { useCandidate: true, scheduledDate: date });
         alreadyScheduled.add(link.id);
