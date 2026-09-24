@@ -86,6 +86,9 @@ select[multiple] { min-height: 120px; }
 .compare-controls label { margin: 0; border: 1px solid var(--mat-border); border-radius: 9px; padding: 12px 14px; background: #f8fbfe; color: var(--mat-heading); }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); align-items: stretch; gap: 12px; margin-bottom: 20px; }
+.source-group { grid-column: 1 / -1; min-width: 0; margin-left: 16px; border: 1px solid var(--mat-border); border-left: 4px solid #d9b5b5; border-radius: var(--mat-radius); padding: 14px; background: #f7f9fc; }
+.source-group > h3 { margin: 0 0 12px; font-size: 14px; }
+.source-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); align-items: stretch; gap: 12px; }
 .source-card { display: flex; flex-direction: column; min-width: 0; padding: 15px; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .source-card:hover { border-color: #8eadd0; box-shadow: 0 6px 16px rgba(8, 47, 96, .1); transform: translateY(-2px); }
 .source-card.is-selected { border-color: #7da5cc; box-shadow: 0 0 0 3px rgba(11, 75, 143, .12), var(--mat-shadow); }
@@ -135,15 +138,16 @@ tbody tr:last-child td { border-bottom: 0; }
 #summary .summary-table .summary-group-row td { border-top: 2px solid #8eadd0; background: #dbeafe; }
 #summary .summary-table .summary-total-row td { border-top: 2px solid #8eadd0; background: #e7f0fb; color: var(--mat-heading); }
 
-#cards .aggregate-card { width: 100%; min-width: 0; max-width: 620px; justify-self: start; border-color: #d9b5b5; border-left: 4px solid var(--mat-accent); background: linear-gradient(135deg, #fff 0%, #fff7f6 100%); color: var(--mat-heading); cursor: pointer; text-align: left; box-shadow: 0 3px 10px rgba(111, 0, 0, .1), var(--mat-shadow); }
+#cards .aggregate-card { grid-column: 1 / -1; width: 100%; min-width: 0; border-color: #d9b5b5; border-left: 4px solid var(--mat-accent); padding: 20px; background: linear-gradient(135deg, #fff 0%, #fff7f6 100%); color: var(--mat-heading); cursor: pointer; text-align: left; box-shadow: 0 3px 10px rgba(111, 0, 0, .1), var(--mat-shadow); }
 #cards .aggregate-card:hover { border-color: #bd8585; border-left-color: var(--mat-accent-deep); background: linear-gradient(135deg, #fff 0%, #fff1ef 100%); box-shadow: 0 7px 18px rgba(111, 0, 0, .14), var(--mat-shadow); }
 #cards .aggregate-card:focus-visible { outline: 3px solid var(--mat-focus); outline-offset: 3px; }
 .aggregate-card-kicker { color: var(--mat-accent); letter-spacing: .12em; text-transform: uppercase; }
-.aggregate-card-title { color: var(--mat-accent-deep); }
+.aggregate-card-title { color: var(--mat-accent-deep); font-size: 20px; }
 .aggregate-card-period { color: var(--mat-muted); }
 .aggregate-card-kpis, .source-card-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 13px 0 10px; }
 .aggregate-card-kpis span, .source-card-kpis span { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border: 1px solid #d7e3ef; border-radius: 8px; background: #fff; }
 .aggregate-card-kpis b, .source-card-kpis b { color: var(--mat-heading); font-size: 19px; line-height: 1.15; white-space: nowrap; }
+.aggregate-card-kpis b { font-size: 22px; }
 .aggregate-card-kpis small, .source-card-kpis small, .aggregate-card-state { color: var(--mat-muted); font-size: 10px; }
 .aggregate-card-state { display: block; margin: 0; font-size: 11px; }
 .aggregate-card-actions .source-card-detail { width: 100%; flex: 1 1 100%; border-color: #b56767; background: #fff7f7; color: var(--mat-accent-deep); }
@@ -225,7 +229,6 @@ dialog::backdrop { background: rgba(23, 55, 95, .48); backdrop-filter: blur(2px)
 .login-wrap form button { width: 100%; margin-top: 6px; }
 #loginError:not(:empty) { margin: 0 0 14px; padding: 12px; }
 
-@media (min-width: 1100px) { #cards .aggregate-card { max-width: none; } }
 @media (max-width: 900px) {
   .header-inner { align-items: flex-start; flex-direction: column; gap: 12px; }
   .header-actions { justify-content: flex-start; max-width: none; width: 100%; }
@@ -246,6 +249,8 @@ dialog::backdrop { background: rgba(23, 55, 95, .48); backdrop-filter: blur(2px)
   .panel-head { display: block; }
   .panel-head > button { margin-top: 10px; }
   .cards { grid-template-columns: 1fr; gap: 10px; }
+  .source-group { margin-left: 0; padding: 12px; }
+  .source-cards { grid-template-columns: 1fr; gap: 10px; }
   .source-card { padding: 16px; }
   .dates, .compare-controls, .compare-report-cards { grid-template-columns: 1fr; }
   .compare-report-card { padding: 15px; }

@@ -15,6 +15,17 @@ implements its assigned task without spawning additional agents. Questions,
 analysis, reviews, documentation and configuration-only skill maintenance may
 be handled directly. Do not fan out routine tasks to multiple agents.
 
+## Runtime configuration wiring
+
+When a user is configuring an integration and a required variable is missing
+from its deployment path, complete the wiring in the relevant runtime manifest
+when the intended path is clear; do not stop after reporting the omission.
+Trace the variable from its runtime consumer through `.env.example` and the
+deployment config. In Docker Compose, host `.env` values reach the container
+only when referenced under `environment` or provided through `env_file`; pass
+variable references, never literal secrets. Keep optionality aligned with when
+the application actually requires the setting.
+
 ## Default agent workflow: Superpowers + Ponytail
 
 For software tasks, use the Superpowers `using-superpowers` skill as the
