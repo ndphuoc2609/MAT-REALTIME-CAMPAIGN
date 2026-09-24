@@ -13,7 +13,7 @@ import { createPostgresPool } from './lib/postgres-persistence.mjs';
 import { collect, closeBrowserContexts, sourceProfileDirectory, isTransientNetworkError } from './lib/connectors.mjs';
 import { SourceError } from './lib/source-error.mjs';
 import { ensureGoogleAdsMonthlyLinks, GOOGLE_CONNECTOR } from './lib/google-ads.mjs';
-import { META_CONNECTOR } from './lib/meta-ads.mjs';
+import { META_CONNECTOR, validateMetaSavedReport } from './lib/meta-ads.mjs';
 import { authCircuit, promoteVerifiedProfile, recoverProfilePromotion, resetAuthCircuit, withProfileLock } from './lib/source-session.mjs';
 import { hasActiveSyncJobs, runHousekeeping } from './lib/housekeeping.mjs';
 
@@ -69,6 +69,11 @@ const inputResultAsync = async callback => {
   try { return await callback(); }
   catch (error) { if (error instanceof HttpError) throw error; throw new HttpError(400, error.message || 'Invalid input.'); }
 };
+function sameLinkReport(existing, candidate) {
+  const existingMonth = existing.reportMonth || existing.from?.slice?.(0, 7) || null;
+  const candidateMonth = candidate.reportMonth || candidate.from?.slice?.(0, 7) || null;
+  return existing.url === candidate.url && existing.from === candidate.from && existing.to === candidate.to && existingMonth === candidateMonth;
+}
 function localScheduleParts(date) {
   return Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
     timeZone: SCHEDULE_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -476,15 +481,18 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
         return json(res, { links, groups: groups(links), months, aggregate: aggregateReports(links, { reportMonth: filter }) });
       }
       if (req.method === 'POST' && url.pathname === '/api/links/preview') {
-        requireAdmin(session); const input = await body(req); return json(res, safeLink(inputResult(() => identify(input))));
+        requireAdmin(session); const input = await body(req); const link = inputResult(() => identify(input));
+        await inputResultAsync(() => validateMetaSavedReport(link));
+        return json(res, safeLink(link));
       }
       if (req.method === 'POST' && url.pathname === '/api/links') {
         requireAdmin(session);
         const input = await body(req); const existingLinks = await store.list();
-        const name = inputResult(() => validateDisplayName(input.name, existingLinks));
-        const link = inputResult(() => identify({ ...input, name }));
+        const link = inputResult(() => identify(input));
+        link.name = inputResult(() => validateDisplayName(input.name, existingLinks, null, link.reportMonth));
         if (link.needsDates) throw new HttpError(400, 'Choose a complete date range.');
-        if (existingLinks.some(existing => existing.scope === scope(link))) throw new HttpError(409, 'This link and date range already exist.');
+        await inputResultAsync(() => validateMetaSavedReport(link));
+        if (existingLinks.some(existing => sameLinkReport(existing, link))) throw new HttpError(409, 'This link and date range already exist.');
         link.id = randomUUID(); link.scope = scope(link); link.status = 'idle'; await store.put(link);
         if (scheduleSettings().enabled && link.connector !== META_CONNECTOR) {
           const parts = localScheduleParts(now());
@@ -516,10 +524,11 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
           if ((await store.jobs()).some(job => job.linkId === link.id && ['running', 'queued'].includes(job.status))) throw new HttpError(409, 'Wait for the current sync to finish before editing this source.');
           const input = await body(req);
           const existingLinks = await store.list();
-          const name = inputResult(() => validateDisplayName(Object.prototype.hasOwnProperty.call(input, 'name') ? input.name : link.name, existingLinks, link.id));
-          const changed = inputResult(() => identify({ url: input.url || link.url, name, from: input.from || link.from, to: input.to || link.to, reportMonth: Object.prototype.hasOwnProperty.call(input, 'reportMonth') ? input.reportMonth : link.reportMonth }));
+          const changed = inputResult(() => identify({ url: input.url || link.url, from: input.from || link.from, to: input.to || link.to, reportMonth: Object.prototype.hasOwnProperty.call(input, 'reportMonth') ? input.reportMonth : link.reportMonth }));
+          changed.name = inputResult(() => validateDisplayName(Object.prototype.hasOwnProperty.call(input, 'name') ? input.name : link.name, existingLinks, link.id, changed.reportMonth));
           if (changed.needsDates) throw new HttpError(400, 'Choose a complete date range.');
-          if (existingLinks.some(existing => existing.id !== link.id && existing.scope === scope(changed))) throw new HttpError(409, 'This link and date range already exist.');
+          await inputResultAsync(() => validateMetaSavedReport(changed));
+          if (existingLinks.some(existing => existing.id !== link.id && sameLinkReport(existing, changed))) throw new HttpError(409, 'This link and date range already exist.');
           const next = { ...changed, id: link.id, scope: scope(changed), status: 'idle' };
           await store.put(next);
           if (scheduleSettings().enabled) {

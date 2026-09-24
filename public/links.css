@@ -138,20 +138,22 @@ tbody tr:last-child td { border-bottom: 0; }
 #summary .summary-table .summary-group-row td { border-top: 2px solid #8eadd0; background: #dbeafe; }
 #summary .summary-table .summary-total-row td { border-top: 2px solid #8eadd0; background: #e7f0fb; color: var(--mat-heading); }
 
-#cards .aggregate-card { grid-column: 1 / -1; width: 100%; min-width: 0; border-color: #d9b5b5; border-left: 4px solid var(--mat-accent); padding: 20px; background: linear-gradient(135deg, #fff 0%, #fff7f6 100%); color: var(--mat-heading); cursor: pointer; text-align: left; box-shadow: 0 3px 10px rgba(111, 0, 0, .1), var(--mat-shadow); }
-#cards .aggregate-card:hover { border-color: #bd8585; border-left-color: var(--mat-accent-deep); background: linear-gradient(135deg, #fff 0%, #fff1ef 100%); box-shadow: 0 7px 18px rgba(111, 0, 0, .14), var(--mat-shadow); }
+#cards .aggregate-card { display: grid; grid-template-columns: minmax(140px, .9fr) minmax(300px, 2fr) minmax(160px, .9fr); grid-template-areas: "kicker kpis state" "title kpis actions" "period kpis actions"; align-items: center; gap: 2px 18px; grid-column: 1 / -1; width: 100%; min-width: 0; border-color: var(--mat-border); border-left: 4px solid var(--mat-primary); padding: 12px 18px; background: linear-gradient(110deg, #fff 0%, var(--mat-primary-soft) 100%); color: var(--mat-heading); cursor: pointer; text-align: left; box-shadow: var(--mat-shadow); }
+#cards .aggregate-card:hover { border-color: #9eb8d3; border-left-color: var(--mat-primary-strong); background: linear-gradient(110deg, #fff 0%, #e5f0fb 100%); box-shadow: 0 6px 16px rgba(8, 47, 96, .1), var(--mat-shadow); }
 #cards .aggregate-card:focus-visible { outline: 3px solid var(--mat-focus); outline-offset: 3px; }
-.aggregate-card-kicker { color: var(--mat-accent); letter-spacing: .12em; text-transform: uppercase; }
-.aggregate-card-title { color: var(--mat-accent-deep); font-size: 20px; }
-.aggregate-card-period { color: var(--mat-muted); }
+.aggregate-card-kicker { grid-area: kicker; margin: 0; color: var(--mat-primary); letter-spacing: .12em; text-transform: uppercase; }
+.aggregate-card-title { grid-area: title; margin: 0; color: var(--mat-heading); font-size: 20px; }
+.aggregate-card-period { grid-area: period; margin: 0; color: var(--mat-muted); }
 .aggregate-card-kpis, .source-card-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 13px 0 10px; }
+#cards .aggregate-card-kpis { grid-area: kpis; margin: 0; }
 .aggregate-card-kpis span, .source-card-kpis span { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border: 1px solid #d7e3ef; border-radius: 8px; background: #fff; }
 .aggregate-card-kpis b, .source-card-kpis b { color: var(--mat-heading); font-size: 19px; line-height: 1.15; white-space: nowrap; }
 .aggregate-card-kpis b { font-size: 22px; }
 .aggregate-card-kpis small, .source-card-kpis small, .aggregate-card-state { color: var(--mat-muted); font-size: 10px; }
-.aggregate-card-state { display: block; margin: 0; font-size: 11px; }
-.aggregate-card-actions .source-card-detail { width: 100%; flex: 1 1 100%; border-color: #b56767; background: #fff7f7; color: var(--mat-accent-deep); }
-.aggregate-card-actions .source-card-detail:hover { border-color: var(--mat-accent); background: #ffeceb; color: var(--mat-accent-deep); }
+.aggregate-card-state { grid-area: state; display: block; margin: 0; font-size: 11px; }
+#cards .aggregate-card-actions { grid-area: actions; margin: 0; padding: 0; }
+.aggregate-card-actions .source-card-detail { width: 100%; flex: 1 1 100%; border-color: var(--mat-border-strong); background: #fff; color: var(--mat-primary); }
+.aggregate-card-actions .source-card-detail:hover { border-color: #9eb8d3; background: var(--mat-primary-soft); color: var(--mat-heading); }
 .aggregate-detail-empty { margin-top: 22px; }
 .aggregate-source-table { min-width: 920px; }
 .aggregate-daily-table { min-width: 680px; }
@@ -235,6 +237,10 @@ dialog::backdrop { background: rgba(23, 55, 95, .48); backdrop-filter: blur(2px)
   .dashboard-main { padding: 22px 16px 36px; }
   .standard-report-cards, .admicro-kpi-section .report-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 740px) {
+  #cards .aggregate-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "kicker" "title" "period" "kpis" "state" "actions"; gap: 3px; }
+  #cards .aggregate-card-kpis { margin: 6px 0; }
+}
 @media (max-width: 650px) {
   .site-header { padding: 15px 16px; }
   .site-header h1 { font-size: 20px; }
@@ -252,6 +258,7 @@ dialog::backdrop { background: rgba(23, 55, 95, .48); backdrop-filter: blur(2px)
   .source-group { margin-left: 0; padding: 12px; }
   .source-cards { grid-template-columns: 1fr; gap: 10px; }
   .source-card { padding: 16px; }
+  #cards .aggregate-card { padding: 12px 14px; }
   .dates, .compare-controls, .compare-report-cards { grid-template-columns: 1fr; }
   .compare-report-card { padding: 15px; }
   .standard-report-cards, .admicro-kpi-section .report-cards { gap: 8px; }

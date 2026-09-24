@@ -135,6 +135,47 @@ test('authenticated APIs enforce roles, CSRF, opaque 24h sessions, and never ret
   } finally { await ctx.app.close(); }
 });
 
+test('VnExpress link names and duplicate URL ranges are scoped to the report month on create and edit', async () => {
+  const ctx = await setup();
+  try {
+    const signedAdmin = await signIn(ctx.base, ctx.origin, ctx.admin.username);
+    const url = 'https://news.fptonline.net/api/get-report';
+    const september = identify({ url, name: 'Monthly publisher', from: '2026-09-01', to: '2026-09-30' });
+    // Older persisted reports may not have an explicit reportMonth.
+    delete september.reportMonth;
+    september.id = 'legacy-vnexpress';
+    september.scope = scope(september);
+    ctx.persistence.store.put(september);
+
+    const august = await api(ctx.base, ctx.origin, signedAdmin.cookie, signedAdmin.data.csrfToken, '/api/links', 'POST', {
+      name: 'Monthly publisher', url, from: '2026-09-01', to: '2026-09-30', reportMonth: '2026-08'
+    });
+    assert.equal(august.response.status, 201);
+    assert.equal(august.data.reportMonth, '2026-08');
+
+    const sameMonthDuplicateUrl = await api(ctx.base, ctx.origin, signedAdmin.cookie, signedAdmin.data.csrfToken, '/api/links', 'POST', {
+      name: 'A different title', url, from: '2026-09-01', to: '2026-09-30', reportMonth: '2026-09'
+    });
+    assert.equal(sameMonthDuplicateUrl.response.status, 409);
+
+    const sameMonthDuplicateName = await api(ctx.base, ctx.origin, signedAdmin.cookie, signedAdmin.data.csrfToken, '/api/links', 'POST', {
+      name: 'Monthly publisher', url, from: '2026-08-01', to: '2026-08-31', reportMonth: '2026-09'
+    });
+    assert.equal(sameMonthDuplicateName.response.status, 400);
+
+    const editUrlCollision = await api(ctx.base, ctx.origin, signedAdmin.cookie, signedAdmin.data.csrfToken, `/api/links/${august.data.id}`, 'PATCH', {
+      name: 'Edited August report', reportMonth: '2026-09'
+    });
+    assert.equal(editUrlCollision.response.status, 409);
+
+    const editNameCollision = await api(ctx.base, ctx.origin, signedAdmin.cookie, signedAdmin.data.csrfToken, `/api/links/${august.data.id}`, 'PATCH', {
+      name: 'Monthly publisher', url: 'https://news.fptonline.net/api/get-report',
+      from: '2026-08-01', to: '2026-08-31', reportMonth: '2026-09'
+    });
+    assert.equal(editNameCollision.response.status, 400);
+  } finally { await ctx.app.close(); }
+});
+
 test('login attempts are rate-limited and sessions persist across app restarts', async () => {
   const ctx = await setup();
   try {
