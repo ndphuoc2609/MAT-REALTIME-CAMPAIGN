@@ -23,7 +23,7 @@ const SESSION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const SESSION_LIFETIME_SECONDS = SESSION_LIFETIME_MS / 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_LIMIT = 5;
-const ADMIN_CONNECTORS = ['admicro-pc', 'admicro-mobile', '24h', 'fpt'];
+const ADMIN_CONNECTORS = ['admicro-pc', 'admicro-mobile', '24h'];
 const SCHEDULE_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const DEFAULT_SCHEDULE_TIME = '02:00';
 
@@ -32,6 +32,7 @@ const knownJobStatuses = new Set([
   'success', 'partial', 'error', 'network_error', 'auth_required', 'auth_blocked',
   'authentication_failed', 'authentication_pending', 'invalid_credentials', 'config_error',
   'schema_error', 'access_denied', 'http_error', 'needs_inspection', 'transport_security',
+  'validation_error', 'provider_payment_required', 'rate_limited', 'provider_error',
   'interactive_auth_required', 'debug_unsafe', 'session_busy'
 ]);
 const storageErrorCodes = new Set(['EACCES', 'EPERM', 'EROFS']);
@@ -242,7 +243,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
     }
     const running = active.find(job => job.status === 'running');
     if (running) {
-      const candidatePending = useCandidate && link.connector !== GOOGLE_CONNECTOR && link.connector !== META_CONNECTOR && existsSync(`${sourceProfileDirectory(directory, link.connector)}.pending`);
+      const candidatePending = useCandidate && !['google-ads', META_CONNECTOR, 'fpt'].includes(link.connector) && existsSync(`${sourceProfileDirectory(directory, link.connector)}.pending`);
       // A scheduled active-profile crawl must not consume the administrator's
       // next explicit candidate test. Queue the candidate behind it instead.
       if (!candidatePending || running.useCandidate) {
@@ -273,8 +274,8 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
             job.message = 'Đang mở phiên nguồn đã cấu hình.'; await store.putJob(job);
             try {
               const collectWithLock = async () => {
-                if (link.connector === GOOGLE_CONNECTOR || link.connector === META_CONNECTOR) {
-                  return collector(link, { directory, projectRoot, job, update: () => store.putJob(job), retryBudget: maxRetries });
+                if (link.connector === GOOGLE_CONNECTOR || link.connector === META_CONNECTOR || link.connector === 'fpt') {
+                  return collector(link, { directory, projectRoot, job, update: () => store.putJob(job), retryBudget: maxRetries, ...(link.connector === 'fpt' ? { quotaStore: store } : {}) });
                 }
                 const activeProfile = sourceProfileDirectory(directory, link.connector);
                 return withProfileLock(directory, link.connector, async profileLock => {
@@ -298,7 +299,9 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
               };
               const result = await collectWithLock();
               job.status = result.complete ? 'success' : 'partial';
-              job.message = result.complete ? 'Đã tải dữ liệu và đối soát thành công.' : result.reconciliation.status === 'incomplete' ? 'Đã đọc báo cáo nhưng một số ngày thiếu dữ liệu; giữ snapshot trước để đối soát tiếp.' : 'Tổng các ngày không khớp tổng kỳ; giữ snapshot trước để đối soát lại.';
+              job.message = result.complete
+                ? link.connector === 'fpt' ? 'Đã tải snapshot tổng kỳ từ VnExpress; API không cung cấp số liệu theo ngày.' : 'Đã tải dữ liệu và đối soát thành công.'
+                : result.reconciliation.status === 'incomplete' ? 'Đã đọc báo cáo nhưng một số ngày thiếu dữ liệu; giữ snapshot trước để đối soát tiếp.' : 'Tổng các ngày không khớp tổng kỳ; giữ snapshot trước để đối soát lại.';
               job.finishedAt = new Date().toISOString();
               const { sessionVerified: _sessionVerified, ...persistedResult } = result;
               if (result.complete) await store.commit(link, persistedResult, job);
@@ -572,7 +575,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
       const jobs = await store.jobs();
       const alreadyScheduled = new Set(jobs.filter(job => job.scheduledDate === date).map(job => job.linkId));
       for (const link of await store.list()) {
-        // API sources require an explicit per-source collection action.
+        // Google Ads and Meta Ads require an explicit per-source collection action.
         if (link.connector === GOOGLE_CONNECTOR || link.connector === META_CONNECTOR) continue;
         if (link.needsDates || alreadyScheduled.has(link.id)) continue;
         await enqueue(link, { useCandidate: true, scheduledDate: date });
@@ -665,7 +668,7 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
-if (invokedPath === resolve(root, 'source-app.mjs') || invokedPath === resolve(root, 'app.mjs')) {
+if (invokedPath === resolve(root, 'source-app.mjs')) {
   loadLocalConfig(root);
   const app = createApp();
   let address;

@@ -99,19 +99,23 @@ For unattended 24h collection, configure `SOURCE_24H_USERNAME`,
 `SOURCE_24H_PASSWORD`, and `SOURCE_24H_AUTO_LOGIN=true` in the server runtime
 environment (or untracked `.env`), then restart the app. If the provider
 rejects the credentials or requests OTP/CAPTCHA/device confirmation, automatic
-login opens a durable circuit and stops trying. Invalid credentials and
-interactive verification remain hard blocks and do not expire automatically;
-a successful manually refreshed protected report still clears the circuit as
-part of the existing session verification flow, otherwise an administrator
-can reset it. Ambiguous 24h submit states are temporary:
+login opens a durable circuit. After invalid credentials, manual jobs and
+repeat jobs for the same scheduled date stay blocked, while each new daily
+scheduled date may make at most one automatic login attempt. Correct the server
+secret before that run to avoid another rejected login; an administrator can
+also reset the circuit after correcting it. OTP/CAPTCHA/device confirmation
+remains a hard block until the source session is refreshed manually and its
+protected report is verified, or an administrator resets the circuit. A
+successful manually refreshed protected report clears the circuit as part of
+the existing session verification flow. Ambiguous 24h submit states are temporary:
 `login_in_progress`, `authentication_pending`, and `authentication_failed`
 block for 15 minutes from the durable timestamp; an older state permits one
 submit on the next invocation. Before that submit, an existing pending
 candidate is checked with one bounded, read-only protected-report probe so a
-successful earlier submit is not duplicated. There is no background timer or
-automatic retry after 15 minutes—the next scheduled or manually triggered job
-performs the check. Correct the server secret or complete a manual session
-refresh, then an administrator can clear the circuit with
+successful earlier submit is not duplicated. There is no background timer;
+recovery occurs on a later job, with scheduled jobs limited to one credential
+submission per scheduled date. Complete a manual session refresh, then an
+administrator can clear the circuit with
 `POST /api/sessions/24h/reset-auth` using the existing admin session and CSRF
 token. The automatic form keeps the public form's default customer account
 type (`accountType=1`); staff account login is not enabled by these variables.
@@ -148,8 +152,9 @@ credentials are read.
 - A source link and date range define a report snapshot. Re-sync replaces that snapshot instead of adding totals twice. Previous snapshots remain subject to the housekeeping retention policy; editing or removing a source does not immediately erase retained snapshots.
 - Daily values are read from the source when supported. `N/A` remains unknown, not zero. A result is marked reconciled only when daily totals match the period total.
 - Job outcomes keep authentication (`auth_required`), invalid or interactive auto-login (`invalid_credentials`, `interactive_auth_required`), denied access (`access_denied`), unexpected response structure (`schema_error`), exhausted network/timeouts (`network_error`), and incomplete/mismatched reconciliation (`partial`) distinct. The admin job panel includes the source-facing error message and attempt/retry counts.
-- Admicro PC and Mobile use the observed report tables. 24h uses its AJAX report response and existing parser. FPT/VnExpress still has no verified report reader. A stored browser profile does not by itself verify source access or report schema.
-- The app never claims live source authentication from profile-file presence. Test source access with an explicit sync and review the returned reconciliation status.
+- Admicro PC and Mobile use the observed report tables. 24h uses its AJAX report response and existing parser. FPT/VnExpress uses the server-only `https://news.fptonline.net/api/get-report` API credentials `SOURCE_VNEXPRESS_USER_NAME` and `SOURCE_VNEXPRESS_API_SECRET_KEY`, configured in the server environment or untracked `.env`. The API request is signed server-side and sends one requested date range per sync; never put credentials in source URLs. The app persists a rolling 60-minute request counter and blocks calls above 100; this relies on the documented single-instance deployment. HTTP/API errors are surfaced by class (`400` validation, `401` auth, `402` account/payment status, `403` access, `429` rate limit, `500` provider error); `429` is not retried automatically.
+- VnExpress returns range totals and banner/order rows without daily values. Snapshots preserve the period totals and row details; the UI explicitly shows that daily figures are unavailable rather than fabricating a daily breakdown. A successful API read is stored as a complete period snapshot, not described as daily reconciliation. Live provider access has not been verified without credentials.
+- The app never claims live source authentication from profile-file presence. Test source access with an explicit sync and review the returned snapshot and reconciliation status where the source supports daily data.
 
 ## Backups and restore
 

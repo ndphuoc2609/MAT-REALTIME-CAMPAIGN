@@ -13,7 +13,8 @@ outputs/
 *.db-*
 *.har
 backups
-deploy/tls
+deploy/
+admicro-crawler.code-workspace
 *-state.json
 session-state*.json
 **/*-state.json
@@ -28,7 +29,6 @@ client_secrets.json
 google_ads_credentials.json
 get_token.py
 test_ads_google.py
-app.mjs
 crawl_pc.mjs
 crawl_mobile.mjs
 scripts/check-links-ui.mjs
