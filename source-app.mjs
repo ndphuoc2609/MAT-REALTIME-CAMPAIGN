@@ -305,7 +305,8 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
               const result = await collectWithLock();
               job.status = result.complete ? 'success' : 'partial';
               job.message = result.complete
-                ? link.connector === 'fpt' ? 'Đã tải snapshot tổng kỳ từ VnExpress; API không cung cấp số liệu theo ngày.' : 'Đã tải dữ liệu và đối soát thành công.'
+                ? link.connector === 'fpt' && result.reconciliation?.status === 'matched' ? 'Đã tải dữ liệu VnExpress và đối soát số liệu theo ngày thành công.'
+                  : link.connector === 'fpt' ? 'Đã tải snapshot tổng kỳ từ VnExpress; phản hồi chưa có số liệu theo ngày.' : 'Đã tải dữ liệu và đối soát thành công.'
                 : result.reconciliation.status === 'incomplete' ? 'Đã đọc báo cáo nhưng một số ngày thiếu dữ liệu; giữ snapshot trước để đối soát tiếp.' : 'Tổng các ngày không khớp tổng kỳ; giữ snapshot trước để đối soát lại.';
               job.finishedAt = new Date().toISOString();
               const { sessionVerified: _sessionVerified, ...persistedResult } = result;
@@ -315,14 +316,17 @@ export function createApp({ directory = resolve(process.env.DATA_DIR || join(roo
             } catch (error) {
               if (shuttingDown) { job.status = 'queued'; job.message = 'Đã lưu vào hàng đợi; sẽ tiếp tục sau khi máy chủ khởi động lại.'; await store.putJob(job); break; }
               const retries = Number(job.retries || 0);
-              const transient = transientError(error);
+              const vnexpressNetworkError = link.connector === 'fpt' && error instanceof SourceError && error.status === 'network_error';
+              // ponytail: cap VnExpress at two requests per sync; raise only with provider quota/retry guidance.
+              const retryLimit = vnexpressNetworkError ? Math.min(maxRetries, 1) : maxRetries;
+              const transient = vnexpressNetworkError || transientError(error);
               const classified = classifyJobError(error);
-              if (retries < maxRetries && transient) {
+              if (retries < retryLimit && transient) {
                 job.retries = retries + 1;
                 const delay = retryDelayMs * (2 ** retries);
                 job.nextAttemptAt = Date.now() + delay;
                 const delayText = delay >= 1000 ? `${delay / 1000} giây` : `${delay} ms`;
-                job.status = 'queued'; job.message = `Lỗi mạng tạm thời; đã lên lịch thử lại ${job.retries}/${maxRetries} sau ${delayText}.`;
+                job.status = 'queued'; job.message = `Lỗi mạng tạm thời; đã lên lịch thử lại ${job.retries}/${retryLimit} sau ${delayText}.`;
                 await store.putJob(job);
                 continue;
               }
