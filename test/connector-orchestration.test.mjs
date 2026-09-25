@@ -52,7 +52,7 @@ function completePeriod() {
   return { total: { impressions: 10, clicks: 2, spend: 3, engagement: null, viewers: null, ctr: 20 }, details: [] };
 }
 
-function loginFixturePage(outcome, { preflight = 'ok', navigation = true, deniedResponses = 0 } = {}) {
+function loginFixturePage(outcome, { preflight = 'ok', postRedirect = null, navigation = true, deniedResponses = 0 } = {}) {
   let current = 'https://khachhang.24h.com.vn/ocm/user/login?login=1';
   let remainingDeniedResponses = deniedResponses;
   const pageState = { fills: 0 };
@@ -60,6 +60,8 @@ function loginFixturePage(outcome, { preflight = 'ok', navigation = true, denied
   const listeners = new Map();
   const response = preflight === 'downgrade'
     ? { status: () => 302, headers: () => ({ location: 'http://khachhang.24h.com.vn/ocm/ajax/user/dologin.php' }), url: () => current }
+    : preflight === 'redirect'
+      ? { status: () => 302, headers: () => ({ location: 'https://khachhang.24h.com.vn/report' }), url: () => current }
     : { status: () => 200, headers: () => ({}), url: () => current };
   const frame = { name: () => 'frm_submit', locator: () => ({ innerText: async () => '' }) };
   const node = { getAttribute: () => 'http://khachhang.24h.com.vn/ocm/ajax/user/dologin.php', setAttribute() {} };
@@ -70,7 +72,18 @@ function loginFixturePage(outcome, { preflight = 'ok', navigation = true, denied
     evaluate: async callback => {
       const source = String(callback);
       if (source.includes('setAttribute')) return 'https://khachhang.24h.com.vn/ocm/ajax/user/dologin.php';
-      if (source.includes('HTMLFormElement')) return (current = 'https://khachhang.24h.com.vn/report', undefined);
+      if (source.includes('HTMLFormElement')) {
+        const submit = routes.get('https://khachhang.24h.com.vn/ocm/ajax/user/dologin.php');
+        const finish = () => (current = postRedirect ? new URL(postRedirect, current).href : 'https://khachhang.24h.com.vn/report');
+        if (!submit) return finish();
+        const route = {
+          async fetch() { return { headers: () => ({ location: postRedirect }), url: () => 'https://khachhang.24h.com.vn/ocm/ajax/user/dologin.php' }; },
+          async fulfill() { finish(); },
+          async abort() {}
+        };
+        if (!postRedirect) return finish();
+        return submit(route);
+      }
       return undefined;
     },
     evaluateAll: async () => false
@@ -446,6 +459,41 @@ test('login action downgrade is rejected before any credential fill', async () =
   }
 });
 
+test('login preflight rejects an action redirect before credentials and post-submit accepts a same-host report redirect', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  try {
+    const preflightPage = loginFixturePage('success', { preflight: 'redirect' });
+    await assert.rejects(ensureAuthenticatedSession(preflightPage, link(), { directory: mkdtempSync(join(tmpdir(), 'admicro-login-preflight-redirect-')), login: true, probe: false }), error => error.status === 'transport_security');
+    assert.equal(preflightPage._state().fills, 0);
+
+    const postSubmitPage = loginFixturePage('success', { postRedirect: '/report/dashboard' });
+    const result = await ensureAuthenticatedSession(postSubmitPage, link(), { directory: mkdtempSync(join(tmpdir(), 'admicro-login-post-redirect-')), login: true, probe: false });
+    assert.deepEqual(result, { authenticated: true, refreshed: true });
+    assert.equal(postSubmitPage._state().fills, 2);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('post-submit login redirects still reject cross-host and unapproved HTTP destinations', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  try {
+    for (const postRedirect of ['https://attacker.example/report', 'http://khachhang.24h.com.vn/report']) {
+      const page = loginFixturePage('success', { postRedirect });
+      await assert.rejects(ensureAuthenticatedSession(page, link(), { directory: mkdtempSync(join(tmpdir(), 'admicro-login-post-unsafe-')), login: true, probe: false }), error => error.status === 'transport_security');
+      assert.equal(page._state().fills, 2);
+    }
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('explicit 24h insecure HTTP opt-in permits the verified same-host redirect', async () => {
   const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, allow: process.env.SOURCE_24H_ALLOW_INSECURE_HTTP, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
   process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_ALLOW_INSECURE_HTTP = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
@@ -505,6 +553,35 @@ test('stale login_in_progress circuit permits one real fixture submit', async ()
     assert.deepEqual(result, { authenticated: true, refreshed: true });
     assert.equal(page._state().fills, 2);
     assert.equal(await authCircuit(directory, '24h'), null);
+  } finally {
+    for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
+      if (value == null) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('stale temporary circuit permits an unscheduled manual retry but keeps the scheduled-day bound', async () => {
+  const previous = { enabled: process.env.SOURCE_24H_AUTO_LOGIN, username: process.env.SOURCE_24H_USERNAME, password: process.env.SOURCE_24H_PASSWORD };
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-login-manual-cooldown-'));
+  try {
+    await tripAuthCircuit(directory, '24h', 'authentication_failed', { scheduledDate: '2026-09-25' });
+    const circuitPath = join(directory, 'source-auth-circuit.json');
+    const state = JSON.parse(readFileSync(circuitPath, 'utf8'));
+    state['24h'].at = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+    writeFileSync(circuitPath, JSON.stringify(state));
+
+    const scheduledPage = loginFixturePage('success');
+    await assert.rejects(ensureAuthenticatedSession(scheduledPage, link(), { directory, job: { scheduledDate: '2026-09-25' }, login: true, probe: false }), error => error.status === 'auth_blocked' && /Lịch ngày 2026-09-25 đã dùng lượt submit/.test(error.message));
+    assert.equal(scheduledPage._state().fills, 0);
+    const malformedSchedulePage = loginFixturePage('success');
+    await assert.rejects(ensureAuthenticatedSession(malformedSchedulePage, link(), { directory, job: { scheduledDate: 'invalid-date' }, login: true, probe: false }), error => error.status === 'auth_blocked');
+    assert.equal(malformedSchedulePage._state().fills, 0);
+
+    const manualPage = loginFixturePage('success');
+    const result = await ensureAuthenticatedSession(manualPage, link(), { directory, job: {}, login: true, probe: false });
+    assert.deepEqual(result, { authenticated: true, refreshed: true });
+    assert.equal(manualPage._state().fills, 2);
   } finally {
     for (const [key, value] of Object.entries({ SOURCE_24H_AUTO_LOGIN: previous.enabled, SOURCE_24H_USERNAME: previous.username, SOURCE_24H_PASSWORD: previous.password })) {
       if (value == null) delete process.env[key]; else process.env[key] = value;
@@ -616,7 +693,7 @@ test('real ambiguous post-submit denial performs one submit and retains cooldown
   process.env.SOURCE_24H_AUTO_LOGIN = 'true'; process.env.SOURCE_24H_USERNAME = 'fixture-user'; process.env.SOURCE_24H_PASSWORD = 'fixture-password';
   const directory = mkdtempSync(join(tmpdir(), 'admicro-login-real-ambiguous-'));
   try {
-    const page = loginFixturePage('success', { deniedResponses: 2 });
+    const page = loginFixturePage('success', { deniedResponses: 2, postRedirect: '/report/dashboard' });
     await assert.rejects(ensureAuthenticatedSession(page, link(), { directory, login: true, probe: false }), error => error.status === 'access_denied');
     assert.equal(page._state().fills, 2);
     const circuit = await authCircuit(directory, '24h');
