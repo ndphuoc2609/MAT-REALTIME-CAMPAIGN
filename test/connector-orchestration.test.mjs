@@ -26,7 +26,9 @@ function fixtureBrowser({ probeFailures = 0 } = {}) {
         url() { return this.current; },
         async goto(url) { this.current = String(url); },
         async evaluate(fn) {
-          if (!String(fn).includes('fetch(')) return false;
+          const source = String(fn);
+          if (source.includes('act_save_user_custom_report')) return { saved: true };
+          if (!source.includes('fetch(')) return false;
           if (remainingProbeFailures > 0) {
             remainingProbeFailures--;
             return { failure: { status: 401, contentType: 'application/json' } };
@@ -46,6 +48,46 @@ function fixtureBrowser({ probeFailures = 0 } = {}) {
 
 function fixtureAdapter(read) {
   return { '24h': { read } };
+}
+
+function filterOrderBrowser(events, origin = 'https://khachhang.24h.com.vn') {
+  return {
+    async launchPersistentContext(profile) {
+      mkdirSync(profile, { recursive: true, mode: 0o700 });
+      const page = {
+        current: 'about:blank',
+        url() { return this.current; },
+        async goto(url) { this.current = String(url); },
+        async evaluate(fn, args) {
+          const source = String(fn);
+          if (source.includes('act_save_user_custom_report')) {
+            const previousFetch = globalThis.fetch;
+            Object.defineProperty(globalThis, 'location', { configurable: true, value: { origin } });
+            globalThis.fetch = async (url, options) => {
+              const form = new URLSearchParams(options.body);
+              events.push({ type: 'save', url: String(url), ...Object.fromEntries(form) });
+              return { ok: true, status: 200, url: String(url), redirected: false, headers: { get: () => 'application/json' }, text: async () => '{}' };
+            };
+            try { return await fn(args); }
+            finally {
+              globalThis.fetch = previousFetch;
+              delete globalThis.location;
+            }
+          }
+          if (source.includes('fetch(')) {
+            const type = source.includes('take: 1') ? 'probe' : 'read';
+            events.push({ type });
+            const payload = { data: [{ c_date: '01-09-2026', c_sum_impressions: 1, c_sum_clicks: 0, c_sum_spend: 0 }] };
+            return type === 'probe' ? { payload } : { pages: [payload], totalCount: 1 };
+          }
+          return false;
+        },
+        async close() {}
+      };
+      const context = { pages: () => [page], async close() {} };
+      return context;
+    }
+  };
 }
 
 function completePeriod() {
@@ -102,6 +144,7 @@ function loginFixturePage(outcome, { preflight = 'ok', postRedirect = null, navi
     off(event, handler) { if (listeners.get(event) === handler) listeners.delete(event); },
     async evaluate(fn) {
       const source = String(fn);
+      if (source.includes('act_save_user_custom_report')) return { saved: true };
       if (source.includes('fetch(')) {
         if (remainingDeniedResponses > 0) {
           remainingDeniedResponses--;
@@ -122,7 +165,9 @@ function accessDeniedProbePage({ succeedAfterLogin = false, deniedResponses = su
     url: () => 'https://khachhang.24h.com.vn/report',
     async goto() {},
     async evaluate(fn) {
-      if (!String(fn).includes('fetch(')) return false;
+      const source = String(fn);
+      if (source.includes('act_save_user_custom_report')) return { saved: true };
+      if (!source.includes('fetch(')) return false;
       probes++;
       if (probes <= deniedResponses) return { failure: { status, contentType: 'text/html', html: true, accessDenied: true } };
       return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
@@ -139,6 +184,30 @@ test('collect keeps a valid session on active profile and does not invoke login'
   assert.equal(result.complete, true);
   assert.equal(loginCalls, 0);
   assert.equal(readFileSync(join(profile, 'marker'), 'utf8'), 'active');
+});
+
+test('24h saves the current custom period before each probe and read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'admicro-collector-period-filter-'));
+  const events = [];
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  process.env.SOURCE_24H_AUTO_LOGIN = 'true';
+  try {
+    const result = await collect(link(), { directory, browser: filterOrderBrowser(events) });
+    assert.equal(result.complete, true);
+    assert.deepEqual(events.map(event => event.type), [
+      'save', 'save', 'save', 'probe', 'save', 'save', 'save', 'read'
+    ]);
+    for (const event of events.filter(event => event.type === 'save')) {
+      assert.equal(event.url, 'https://khachhang.24h.com.vn/ocm/sync_dfp/act_save_user_custom_report/');
+      assert.equal(event.screen_name, '/ocm/lineitem/index/');
+    }
+    assert.deepEqual(events.filter(event => event.type === 'save').map(({ field_name, field_value }) => [field_name, field_value]), [
+      ['c_statistic_from_date', '01-09-2026'], ['c_statistic_to_date', '01-09-2026'], ['c_statistic_date_range_type', 'CUSTOM_DATE'],
+      ['c_statistic_from_date', '01-09-2026'], ['c_statistic_to_date', '01-09-2026'], ['c_statistic_date_range_type', 'CUSTOM_DATE']
+    ]);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
 });
 
 test('collect recovers one mid-read expiry and records the bounded recovery', async () => {
@@ -292,7 +361,9 @@ test('forced login skips denied report preprobe and verifies only after handler'
     url: () => 'https://khachhang.24h.com.vn/report',
     async goto() { gotoCalls++; throw new Error('preprobe must be skipped'); },
     async evaluate(fn) {
-      if (String(fn).includes('fetch(')) return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
+      const source = String(fn);
+      if (source.includes('act_save_user_custom_report')) return { saved: true };
+      if (source.includes('fetch(')) return { payload: { data: [{ c_date: '01-09-2026', c_sum_impressions: 1 }] } };
       return false;
     }
   };
@@ -743,6 +814,28 @@ test('manual mode preserves the configured report URL and does not enforce auto-
     });
     assert.equal(result.complete, true);
     assert.equal(receivedOptions.secureTransport, false);
+  } finally {
+    if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
+  }
+});
+
+test('manual 24h read saves its period over the configured HTTP origin', async () => {
+  const previous = process.env.SOURCE_24H_AUTO_LOGIN;
+  delete process.env.SOURCE_24H_AUTO_LOGIN;
+  const manualLink = link();
+  manualLink.url = manualLink.url.replace('https://', 'http://');
+  const events = [];
+  try {
+    const result = await collect(manualLink, {
+      directory: mkdtempSync(join(tmpdir(), 'admicro-manual-http-filter-')),
+      browser: filterOrderBrowser(events, 'http://khachhang.24h.com.vn')
+    });
+    assert.equal(result.complete, true);
+    assert.equal(events[0].url, 'http://khachhang.24h.com.vn/ocm/sync_dfp/act_save_user_custom_report/');
+    assert.deepEqual(events.slice(0, 3).map(({ field_name, field_value }) => [field_name, field_value]), [
+      ['c_statistic_from_date', '01-09-2026'], ['c_statistic_to_date', '01-09-2026'], ['c_statistic_date_range_type', 'CUSTOM_DATE']
+    ]);
+    assert.equal(events[3].type, 'read');
   } finally {
     if (previous == null) delete process.env.SOURCE_24H_AUTO_LOGIN; else process.env.SOURCE_24H_AUTO_LOGIN = previous;
   }
